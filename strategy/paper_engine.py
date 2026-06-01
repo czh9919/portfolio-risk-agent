@@ -348,6 +348,115 @@ def _risk_gates(risk: dict, paper_cfg: dict, equity: float) -> tuple[bool, str]:
     return True, ""
 
 
+# ── Rebalance helper ──────────────────────────────────────────────────────────
+
+def _rebalance_orders(
+    results:             list[dict],
+    positions:           dict,
+    equity:              float,
+    price_data:          dict,
+    risk_weights:        dict,
+    max_pos_pct:         float,
+    rebalance_threshold: float,
+    gates_allow_buys:    bool,
+    remaining_bp:        float,
+    dry_run:             bool,
+    exiting:             set,
+) -> tuple[list[dict], float]:
+    """
+    Trim overweight and top-up underweight BUY-signal holdings.
+
+    Only acts on tickers where robust_signal == BUY and already held.
+    Trims bypass risk gates; top-ups respect them and consume buying power.
+    Returns (orders, updated_remaining_bp).
+    """
+    from brokers.alpaca import place_order
+
+    held_buys = [
+        r for r in results
+        if r.get("robust_signal") == "BUY"
+        and r["ticker"] in positions
+        and r["ticker"] not in exiting
+    ]
+    if not held_buys:
+        return [], remaining_bp
+
+    irs      = np.array([max(float(r.get("ir") or 0), 0.01) for r in held_buys])
+    raw_w    = irs / irs.sum()
+    target_w = np.minimum(raw_w, max_pos_pct)
+
+    orders: list[dict] = []
+
+    for r, tgt in zip(held_buys, target_w):
+        ticker  = r["ticker"]
+        cur_w   = float(risk_weights.get(ticker, 0.0))
+        delta_w = tgt - cur_w   # positive = underweight, negative = overweight
+
+        if abs(delta_w) < rebalance_threshold:
+            continue
+
+        pd_obj = price_data.get(ticker)
+        if pd_obj is None or pd_obj.closes is None or pd_obj.closes.empty:
+            continue
+        price = float(pd_obj.closes.iloc[-1])
+        if price <= 0:
+            continue
+
+        if delta_w < 0:
+            # Overweight — trim (always allowed)
+            trim_qty = int(abs(delta_w) * equity / price)
+            if trim_qty < 1:
+                continue
+            held_qty = int(float(positions[ticker].get("qty") or 0))
+            trim_qty = min(trim_qty, held_qty)
+            if trim_qty < 1:
+                continue
+            orders.append({
+                "ticker": ticker, "side": "sell", "qty": trim_qty,
+                "reason": (
+                    f"REBALANCE TRIM  cur={cur_w*100:.1f}%"
+                    f"  target={tgt*100:.1f}%  Δ={delta_w*100:+.1f}%"
+                ),
+            })
+            if not dry_run:
+                try:
+                    place_order(ticker, trim_qty, "sell")
+                    logger.info(
+                        f"Paper: REBALANCE TRIM {trim_qty}x {ticker}"
+                        f"  Δw={delta_w*100:+.1f}%"
+                    )
+                except Exception as e:
+                    logger.warning(f"Paper: rebalance trim {ticker} failed — {e}")
+
+        else:
+            # Underweight — top up (only if gates pass and buying power allows)
+            if not gates_allow_buys:
+                continue
+            topup_val = min(delta_w * equity, remaining_bp)
+            topup_qty = int(topup_val / price)
+            if topup_qty < 1:
+                continue
+            remaining_bp -= topup_qty * price
+            orders.append({
+                "ticker": ticker, "side": "buy", "qty": topup_qty,
+                "reason": (
+                    f"REBALANCE TOPUP  cur={cur_w*100:.1f}%"
+                    f"  target={tgt*100:.1f}%  Δ={delta_w*100:+.1f}%"
+                ),
+            })
+            if not dry_run:
+                try:
+                    place_order(ticker, topup_qty, "buy")
+                    logger.info(
+                        f"Paper: REBALANCE TOPUP {topup_qty}x {ticker}"
+                        f"  Δw={delta_w*100:+.1f}%"
+                    )
+                except Exception as e:
+                    logger.warning(f"Paper: rebalance topup {ticker} failed — {e}")
+
+    return orders, remaining_bp
+
+
 # ── Order generation + execution ──────────────────────────────────────────────
 
 def generate_orders(
@@ -439,6 +548,25 @@ def generate_orders(
         if not allow_buys:
             logger.warning(f"Paper: BUY orders blocked — {gate_reason}")
 
+    # Budget shared between rebalance top-ups and new buys
+    budget       = float(buying_power) if buying_power is not None else equity
+    remaining_bp = budget
+
+    # ── Rebalance existing BUY-signal holdings ────────────────────────────────
+    rebal_threshold = float((paper_cfg or {}).get("rebalance_threshold", 0.05))
+    if risk is not None and rebal_threshold > 0:
+        rebal_orders, remaining_bp = _rebalance_orders(
+            results, positions, equity, price_data,
+            risk_weights=risk.get("weights", {}),
+            max_pos_pct=max_pos_pct,
+            rebalance_threshold=rebal_threshold,
+            gates_allow_buys=allow_buys,
+            remaining_bp=remaining_bp,
+            dry_run=dry_run,
+            exiting=exiting,
+        )
+        orders.extend(rebal_orders)
+
     if not allow_buys:
         return orders
 
@@ -452,11 +580,6 @@ def generate_orders(
     raw_w   = irs / irs.sum()                       # proportional weights
     alloc_w = np.minimum(raw_w, max_pos_pct)        # cap each at max_pos_pct
     # Do NOT renormalise: if total < 1 that's intentional (leaves cash buffer)
-
-    # Bound total spend by available buying power (cash) when supplied, so we
-    # never queue orders the account cannot fund.
-    budget      = float(buying_power) if buying_power is not None else equity
-    remaining_bp = budget
 
     for r, w in zip(new_buys, alloc_w):
         ticker = r["ticker"]

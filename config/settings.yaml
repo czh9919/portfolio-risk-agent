@@ -52,3 +52,4 @@ paper_trade:
   max_drawdown_halt: 0.10  # halt new buys if equity fell > 10% from starting_equity
   starting_equity: 100000  # Alpaca paper account starting equity (USD)
   stop_loss_pct: 0.15      # close any position whose unrealised loss exceeds 15%
+  rebalance_threshold: 0.05 # trim/top-up held BUY positions when weight drifts > 5%

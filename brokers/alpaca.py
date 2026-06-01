@@ -33,6 +33,17 @@ def is_configured() -> bool:
     return bool(os.environ.get("ALPACA_API_KEY") and os.environ.get("ALPACA_SECRET_KEY"))
 
 
+def is_market_open() -> bool:
+    """Return True if the US equity market is currently open per Alpaca clock."""
+    try:
+        r = requests.get(f"{_PAPER_BASE}/v2/clock", headers=_headers(), timeout=_TIMEOUT)
+        r.raise_for_status()
+        return bool(r.json().get("is_open", False))
+    except Exception as e:
+        logger.warning(f"Alpaca clock check failed ({e}) — assuming open to avoid blocking")
+        return True
+
+
 # ── Account ───────────────────────────────────────────────────────────────────
 
 def get_account() -> dict:
@@ -79,15 +90,16 @@ def cancel_all_orders() -> None:
 
 def place_order(
     symbol:     str,
-    qty:        int,
+    qty:        float,
     side:       str,           # "buy" | "sell"
     order_type: str = "market",
     tif:        str = "day",
 ) -> dict:
-    """Place a market order. Raises on HTTP error."""
+    """Place a market order supporting fractional shares. Raises on HTTP error."""
+    qty_str = f"{qty:.6g}"   # "10" for whole shares, "2.5" for fractional
     body = {
         "symbol":        symbol,
-        "qty":           str(qty),
+        "qty":           qty_str,
         "side":          side,
         "type":          order_type,
         "time_in_force": tif,

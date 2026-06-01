@@ -29,8 +29,16 @@ _EWMA_LAMBDA = 0.94   # same as main risk engine
 logger = logging.getLogger(__name__)
 
 _WATCHLIST_PATH  = Path("config/watchlist.csv")
-_WATERMARKS_PATH = Path("cache/paper_highs.json")
-_TRADE_LOG_PATH  = Path("cache/paper_trade_log.json")
+# Durable paper-trade state lives under data/ (committed by CI) — NOT under
+# cache/, which is .gitignored and evicted between GitHub Actions runs. Keeping
+# these here is what makes NAV history, trade log and trailing-stop watermarks
+# survive across runs so the performance metrics are meaningful.
+_PAPER_STATE_DIR  = Path("data/paper_state")
+_WATERMARKS_PATH  = _PAPER_STATE_DIR / "paper_highs.json"
+_TRADE_LOG_PATH   = _PAPER_STATE_DIR / "paper_trade_log.json"
+_NAV_HISTORY_PATH = _PAPER_STATE_DIR / "paper_nav_history.json"
+# Earnings lookups are an ephemeral per-day cache — fine to keep in cache/.
+_EARNINGS_CACHE_PATH = Path("cache/paper_earnings_cache.json")
 
 
 # ── Watermark / trade-log helpers ─────────────────────────────────────────────
@@ -76,8 +84,177 @@ def _append_trade_log(orders: list[dict], account: dict) -> None:
     _TRADE_LOG_PATH.write_text(json.dumps(log, indent=2), encoding="utf-8")
 
 
+def _record_nav_snapshot(account: dict) -> None:
+    """Append today's equity/cash to the NAV history file."""
+    import json
+    import datetime as dt
+    try:
+        history: list[dict] = []
+        if _NAV_HISTORY_PATH.exists():
+            history = json.loads(_NAV_HISTORY_PATH.read_text(encoding="utf-8"))
+        today_str = dt.date.today().isoformat()
+        # Overwrite same-day entry if we run multiple times
+        history = [h for h in history if h.get("date") != today_str]
+        history.append({
+            "date":   today_str,
+            "equity": float(account.get("equity", 0) or 0),
+            "cash":   float(account.get("cash", 0) or 0),
+        })
+        _NAV_HISTORY_PATH.parent.mkdir(parents=True, exist_ok=True)
+        _NAV_HISTORY_PATH.write_text(json.dumps(history, indent=2), encoding="utf-8")
+    except Exception as e:
+        logger.warning(f"Paper: NAV snapshot failed — {e}")
+
+
+def _compute_performance(history: list[dict]) -> dict:
+    """Return {total_return, sharpe, sortino, max_drawdown, n_days} from NAV history."""
+    if len(history) < 2:
+        return {"total_return": 0.0, "sharpe": None, "sortino": None,
+                "max_drawdown": 0.0, "n_days": len(history)}
+    equities = np.array([h["equity"] for h in history], dtype=float)
+    returns  = np.diff(equities) / np.where(equities[:-1] > 0, equities[:-1], 1.0)
+    total_return = float(equities[-1] / equities[0] - 1.0) if equities[0] > 0 else 0.0
+    mean_r  = float(np.mean(returns))
+    std_r   = float(np.std(returns, ddof=1)) if len(returns) > 1 else 0.0
+    sharpe  = float(mean_r / std_r * np.sqrt(252)) if std_r > 1e-10 else None
+    neg_r   = returns[returns < 0]
+    dstd    = float(np.std(neg_r, ddof=1)) if len(neg_r) > 1 else 0.0
+    sortino = float(mean_r / dstd * np.sqrt(252)) if dstd > 1e-10 else None
+    peak    = np.maximum.accumulate(equities)
+    max_dd  = float(np.max((peak - equities) / np.where(peak > 0, peak, 1.0)))
+    return {
+        "total_return": total_return,
+        "sharpe":       sharpe,
+        "sortino":      sortino,
+        "max_drawdown": max_dd,
+        "n_days":       len(history),
+    }
+
+
+def _load_earnings_cache() -> dict:
+    import json
+    try:
+        if _EARNINGS_CACHE_PATH.exists():
+            return json.loads(_EARNINGS_CACHE_PATH.read_text(encoding="utf-8"))
+    except Exception:
+        pass
+    return {}
+
+
+def _save_earnings_cache(cache: dict) -> None:
+    import json
+    try:
+        _EARNINGS_CACHE_PATH.parent.mkdir(parents=True, exist_ok=True)
+        _EARNINGS_CACHE_PATH.write_text(json.dumps(cache), encoding="utf-8")
+    except Exception:
+        pass
+
+
+def _coerce_date(v):
+    """Best-effort coercion of yfinance date values to a datetime.date."""
+    import datetime as dt
+    if v is None:
+        return None
+    if isinstance(v, dt.datetime):
+        return v.date()
+    if isinstance(v, dt.date):
+        return v
+    try:
+        return pd.Timestamp(v).date()
+    except Exception:
+        try:
+            return dt.date.fromisoformat(str(v)[:10])
+        except Exception:
+            return None
+
+
+def _fetch_next_earnings_date(ticker: str):
+    """
+    Return the next upcoming earnings date (datetime.date) or None.
+
+    Uses Ticker.calendar — far more reliable than the heavily rate-limited
+    .info dict. Returns None on both 'no upcoming date found' AND on lookup
+    failure; the caller logs the failure case distinctly so a silently broken
+    gate is visible in the logs.
+    """
+    import datetime as dt
+    import yfinance as yf
+    tk    = yf.Ticker(ticker)
+    cal   = tk.calendar
+    dates = []
+    if isinstance(cal, dict):                       # newer yfinance
+        ed = cal.get("Earnings Date") or cal.get("Earnings Date Start")
+        if ed is not None:
+            for d in (ed if isinstance(ed, (list, tuple)) else [ed]):
+                dates.append(_coerce_date(d))
+    elif cal is not None and hasattr(cal, "empty") and not cal.empty:  # older DataFrame
+        try:
+            if "Earnings Date" in list(cal.index):
+                for v in cal.loc["Earnings Date"].values:
+                    dates.append(_coerce_date(v))
+        except Exception:
+            pass
+    today  = dt.date.today()
+    future = [d for d in dates if d is not None and d >= today]
+    return min(future) if future else None
+
+
+def _near_earnings(ticker: str, avoid_days: int) -> bool:
+    """
+    Return True if ticker reports earnings within avoid_days calendar days.
+
+    Results are cached per calendar day to avoid hammering yfinance across the
+    BUY candidate loop. On a *lookup failure* we log a WARNING (so a broken gate
+    is observable) and return False so a transient yfinance outage doesn't block
+    all trading.
+    """
+    if avoid_days <= 0:
+        return False
+    import datetime as dt
+    today = dt.date.today()
+    key   = ticker.upper()
+    cache = _load_earnings_cache()
+    entry = cache.get(key)
+
+    if entry and entry.get("date") == today.isoformat():
+        nd = entry.get("next_earnings")
+        if nd is None:
+            return False
+        return 0 <= (dt.date.fromisoformat(nd) - today).days <= avoid_days
+
+    try:
+        next_date = _fetch_next_earnings_date(ticker)
+    except Exception as e:
+        logger.warning(
+            f"Paper: earnings lookup FAILED for {ticker} — gate skipped this run ({e})"
+        )
+        return False
+
+    cache[key] = {
+        "date":          today.isoformat(),
+        "next_earnings": next_date.isoformat() if next_date else None,
+    }
+    _save_earnings_cache(cache)
+    if next_date is None:
+        return False
+    return 0 <= (next_date - today).days <= avoid_days
+
+
+def _fetch_vix() -> float | None:
+    """Fetch the latest VIX close from yfinance. Returns None on failure."""
+    try:
+        import yfinance as yf
+        hist = yf.Ticker("^VIX").history(period="2d")
+        if not hist.empty:
+            return float(hist["Close"].iloc[-1])
+    except Exception as e:
+        logger.warning(f"Paper: VIX fetch failed — {e}")
+    return None
+
+
 def _send_paper_summary(
-    orders: list[dict], account: dict, risk: dict, config: dict
+    orders: list[dict], account: dict, risk: dict, config: dict,
+    perf: dict = None, market_open: bool = True,
 ) -> None:
     """Send a brief HTML email summarising today's paper trade orders and risk snapshot."""
     import datetime as dt
@@ -156,6 +333,45 @@ def _send_paper_summary(
     buys_zh  = f"{len(buys)} 买入"
     sells_zh = f"{len(sells)} 卖出"
 
+    # Performance section
+    def _perf_rows() -> str:
+        if not perf or perf.get("n_days", 0) < 2:
+            return ""
+        tr = perf.get("total_return", 0) * 100
+        tr_color = "#27ae60" if tr >= 0 else "#e74c3c"
+        sharpe_str  = f"{perf['sharpe']:.2f}"  if perf.get("sharpe")  is not None else "—"
+        sortino_str = f"{perf['sortino']:.2f}" if perf.get("sortino") is not None else "—"
+        dd_str = f"{perf.get('max_drawdown', 0)*100:.1f}%"
+        return f"""
+        <tr style="background:#f8f9fa">
+          <td colspan="2" style="padding:10px 12px;font-size:11px;font-weight:bold;
+                                  color:#95a5a6;letter-spacing:.5px">
+            PERFORMANCE ({perf.get('n_days','?')} days) / 累计表现
+          </td>
+        </tr>
+        <tr>
+          <td style="padding:8px 12px;font-size:13px">
+            <span style="color:#555">Total Return / 累计收益</span><br>
+            <span style="color:#aaa;font-size:11px"></span>
+          </td>
+          <td style="padding:8px 12px;font-size:14px;text-align:right;
+                     font-weight:bold;color:{tr_color}">
+            {tr:+.2f}%
+          </td>
+        </tr>
+        {_stat("Sharpe (ann.)", "夏普比率（年化）", sharpe_str)}
+        {_stat("Sortino (ann.)", "索提诺比率（年化）", sortino_str)}
+        {_stat("Max Drawdown", "最大回撤", dd_str)}"""
+
+    mkt_notice = ""
+    if not market_open:
+        mkt_notice = (
+            "<tr><td colspan='2' style='background:#fef9e7;padding:10px 12px;"
+            "font-size:12px;color:#d68910;border-bottom:1px solid #f9e79f'>"
+            "Market closed — screening only, no new orders placed. / "
+            "市场已休市，仅完成筛选，未下单。</td></tr>"
+        )
+
     html = f"""<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -190,6 +406,7 @@ def _send_paper_summary(
     <tr><td style="padding:0">
       <table width="100%" cellpadding="0" cellspacing="0"
              style="border-bottom:2px solid #ecf0f1">
+        {mkt_notice}
         <!-- Account header -->
         <tr style="background:#f8f9fa">
           <td colspan="2" style="padding:10px 12px;font-size:11px;font-weight:bold;
@@ -210,6 +427,7 @@ def _send_paper_summary(
         {_stat("VaR₉₅ (1-day)", "单日风险价值", f"{var_95:.1f}%", bold=True)}
         {_stat("Beta vs SPY", "市场贝塔", f"{beta:.2f}")}
         {_stat("HHI concentration", "集中度指数", f"{hhi:.3f}")}
+        {_perf_rows()}
       </table>
     </td></tr>
 
@@ -542,7 +760,9 @@ def _paper_portfolio_risk(
     }
 
 
-def _risk_gates(risk: dict, paper_cfg: dict, equity: float) -> tuple[bool, str]:
+def _risk_gates(
+    risk: dict, paper_cfg: dict, equity: float, vix: float = None
+) -> tuple[bool, str]:
     """
     Check all risk gates before opening new positions.
     Returns (allow_new_buys, reason_string).
@@ -575,6 +795,11 @@ def _risk_gates(risk: dict, paper_cfg: dict, equity: float) -> tuple[bool, str]:
         return False, (
             f"drawdown {dd*100:.1f}% > halt threshold {max_dd*100:.0f}%"
         )
+
+    # Gate 5: VIX spike
+    vix_threshold = float(paper_cfg.get("vix_halt_threshold", 0))
+    if vix is not None and vix_threshold > 0 and vix > vix_threshold:
+        return False, f"VIX {vix:.1f} > halt threshold {vix_threshold:.0f}"
 
     return True, ""
 
@@ -653,12 +878,12 @@ def _rebalance_orders(
                     f" {cgt_friction*100:.1f}%)"
                 )
                 continue
-            trim_qty = int(abs(delta_w) * equity / price)
-            if trim_qty < 1:
+            trim_qty = round(abs(delta_w) * equity / price, 6)
+            if trim_qty < 0.001:
                 continue
-            held_qty = int(float(positions[ticker].get("qty") or 0))
+            held_qty = float(positions[ticker].get("qty") or 0)
             trim_qty = min(trim_qty, held_qty)
-            if trim_qty < 1:
+            if trim_qty < 0.001:
                 continue
             orders.append({
                 "ticker":    ticker, "side": "sell", "qty": trim_qty,
@@ -686,8 +911,8 @@ def _rebalance_orders(
             if not gates_allow_buys:
                 continue
             topup_val = min(delta_w * equity, remaining_bp)
-            topup_qty = int(topup_val / price)
-            if topup_qty < 1:
+            topup_qty = round(topup_val / price, 6)
+            if topup_qty < 0.001:
                 continue
             remaining_bp -= topup_qty * price
             orders.append({
@@ -719,11 +944,13 @@ def generate_orders(
     positions:   dict,
     equity:      float,
     price_data:  dict,
-    max_pos_pct:  float = 0.15,
-    dry_run:      bool  = False,
-    risk:         dict  = None,
-    paper_cfg:    dict  = None,
-    buying_power: float = None,
+    max_pos_pct:        float = 0.15,
+    dry_run:            bool  = False,
+    risk:               dict  = None,
+    paper_cfg:          dict  = None,
+    buying_power:       float = None,
+    vix:                float = None,
+    market_open:        bool  = True,
 ) -> list[dict]:
     """
     Compute and (unless dry_run) execute Alpaca paper orders.
@@ -844,8 +1071,11 @@ def generate_orders(
 
     # ── Risk gates — evaluated once before any new BUY ────────────────────────
     allow_buys = True
-    if risk is not None and paper_cfg is not None:
-        allow_buys, gate_reason = _risk_gates(risk, paper_cfg, equity)
+    if not market_open:
+        allow_buys = False
+        logger.info("Paper: BUY orders skipped — market closed")
+    elif risk is not None and paper_cfg is not None:
+        allow_buys, gate_reason = _risk_gates(risk, paper_cfg, equity, vix=vix)
         if not allow_buys:
             logger.warning(f"Paper: BUY orders blocked — {gate_reason}")
 
@@ -878,6 +1108,8 @@ def generate_orders(
     if not new_buys:
         return orders
 
+    earnings_avoid_days = int((paper_cfg or {}).get("earnings_avoid_days", 0))
+
     # Use IR as conviction weight; floor at 0.01 so tickers missing IR still get a slice
     irs     = np.array([max(float(r.get("ir") or 0), 0.01) for r in new_buys])
     raw_w   = irs / irs.sum()                       # proportional weights
@@ -886,6 +1118,14 @@ def generate_orders(
 
     for r, w in zip(new_buys, alloc_w):
         ticker = r["ticker"]
+
+        # Skip if earnings are imminent (binary event risk)
+        if _near_earnings(ticker, earnings_avoid_days):
+            logger.info(
+                f"Paper: {ticker} BUY skipped — earnings within {earnings_avoid_days}d"
+            )
+            continue
+
         pd_obj = price_data.get(ticker)
         if pd_obj is None or pd_obj.closes is None or pd_obj.closes.empty:
             logger.warning(f"Paper: {ticker} BUY skipped — no price data")
@@ -893,11 +1133,11 @@ def generate_orders(
 
         price      = float(pd_obj.closes.iloc[-1])
         target_val = min(equity * float(w), remaining_bp)
-        if target_val < price:
+        if target_val < price * 0.001:
             logger.info(f"Paper: {ticker} BUY skipped — insufficient buying power")
             continue
-        qty = int(target_val / price)
-        if qty < 1:
+        qty = round(target_val / price, 6)
+        if qty < 0.001:
             continue
         remaining_bp -= qty * price
 
@@ -936,7 +1176,7 @@ def run_paper_trade_pipeline(config: dict) -> dict:
     """
     from data.price_loader import load_prices
     from risk.optimizer    import fetch_ff5
-    from brokers.alpaca    import is_configured, get_account, get_positions
+    from brokers.alpaca    import is_configured, get_account, get_positions, is_market_open
 
     paper_cfg   = config.get("paper_trade", {})
     target_size = int(paper_cfg.get("universe_size", 50))
@@ -944,9 +1184,19 @@ def run_paper_trade_pipeline(config: dict) -> dict:
     ff_days     = int(config.get("factor_model", {}).get("window_days", 252))
     dry_run     = os.environ.get("PAPER_DRY_RUN", "false").lower() == "true"
 
+    market_open = is_market_open()
+    if not market_open:
+        logger.warning("Paper: US market is closed — screening will run but no orders placed")
+
+    # Fetch VIX for the VIX gate
+    vix = _fetch_vix()
+    if vix is not None:
+        logger.info(f"Paper: VIX = {vix:.1f}")
+
     logger.info(
         f"=== Paper Trade Pipeline  universe={target_size}  "
-        f"max_pos={max_pos_pct*100:.0f}%  dry_run={dry_run} ==="
+        f"max_pos={max_pos_pct*100:.0f}%  dry_run={dry_run}  "
+        f"market_open={market_open}  VIX={vix} ==="
     )
 
     # 1. Expand universe
@@ -995,6 +1245,20 @@ def run_paper_trade_pipeline(config: dict) -> dict:
         try:
             account   = get_account()
             equity    = float(account.get("equity", 100_000))
+
+            # Idempotency guard: cancel any stale unfilled day-orders from an
+            # earlier run before reading positions / placing new ones. Two
+            # workflows (daily_run 13:45 UTC and paper_trade 22:00 UTC) plus
+            # manual dispatch can fire the same day; clearing open orders first
+            # prevents duplicate/contradictory orders stacking up.
+            if not dry_run and market_open:
+                try:
+                    from brokers.alpaca import cancel_all_orders
+                    cancel_all_orders()
+                    logger.info("Paper: cleared stale open orders before trading")
+                except Exception as e:
+                    logger.warning(f"Paper: cancel_all_orders failed — {e}")
+
             positions = get_positions()
             account_info = {
                 "equity":       equity,
@@ -1018,11 +1282,15 @@ def run_paper_trade_pipeline(config: dict) -> dict:
                 f"n={risk_snapshot['n_positions']}"
             )
 
+            # Record daily NAV for performance tracking
+            _record_nav_snapshot(account_info)
+
             orders = generate_orders(
                 all_results, positions, equity, price_data,
                 max_pos_pct=max_pos_pct, dry_run=dry_run,
                 risk=risk_snapshot, paper_cfg=paper_cfg,
                 buying_power=account_info.get("buying_power"),
+                vix=vix, market_open=market_open,
             )
         except Exception as e:
             logger.error(f"Alpaca connection error: {e}")
@@ -1040,7 +1308,21 @@ def run_paper_trade_pipeline(config: dict) -> dict:
     # ── Persist trade history and send email summary ───────────────────────────
     if orders:
         _append_trade_log(orders, account_info)
-    _send_paper_summary(orders, account_info, risk_snapshot, config)
+
+    # Load NAV history for performance section in email
+    import json
+    nav_history: list[dict] = []
+    if _NAV_HISTORY_PATH.exists():
+        try:
+            nav_history = json.loads(_NAV_HISTORY_PATH.read_text(encoding="utf-8"))
+        except Exception:
+            pass
+    perf = _compute_performance(nav_history)
+
+    _send_paper_summary(
+        orders, account_info, risk_snapshot, config,
+        perf=perf, market_open=market_open,
+    )
 
     return {
         "perm_results":      perm_results,

@@ -110,7 +110,7 @@ Set via the `RUN_MODE` environment variable:
 | `portfolio` | Manual / local | Portfolio risk report only; skips watchlist factor ranking |
 | `alert_check` | 14:00 (09:00 ET, pre-market) | Threshold check only; fires alert emails when a metric is RED; no report |
 | `backtest` | Manual | Walk-forward validation — FF5 μ vs historical mean μ in Markowitz |
-| `paper_trade` | 22:00 Mon–Fri (after daily_run) | Screen 50-ticker universe, prune/promote watchlist, execute Alpaca paper orders |
+| `paper_trade` | 13:45 (09:45 ET, 15 min after open) + 22:00 Mon–Fri | Market-calendar gated; screen 50-ticker universe, prune/promote watchlist, run risk/VIX gates, execute fractional Alpaca paper orders, record NAV + performance |
 
 ---
 
@@ -132,7 +132,7 @@ Set via the `RUN_MODE` environment variable:
 
 | File | Role |
 |---|---|
-| `alpaca.py` | Alpaca Markets paper trading REST client: `get_account`, `get_positions`, `place_order`, `close_position`, `get_latest_price`. Paper base URL; requires `ALPACA_API_KEY` + `ALPACA_SECRET_KEY`. |
+| `alpaca.py` | Alpaca Markets paper trading REST client: `get_account`, `get_positions`, `place_order`, `close_position`, `get_latest_price`, `get_open_orders`, `cancel_all_orders`, and `is_market_open` (`/v2/clock`). Paper base URL; requires `ALPACA_API_KEY` + `ALPACA_SECRET_KEY`. |
 
 ### `strategy/`
 
@@ -144,7 +144,7 @@ Set via the `RUN_MODE` environment variable:
 | `factor_ortho.py` | **Factor collinearity diagnostics**: `check_factor_collinearity` — pairwise correlations, VIF per factor, condition number of the FF5 correlation matrix, and high-correlation pair flagging (|r|>0.4). Warns when VIF>5, condition number>10, or any high-corr pair is found. |
 | `ic_analysis.py` | **Cross-sectional IC analysis**: `compute_universe_ic` — rolling Spearman rank-IC between predicted alpha ranks (estimated over a 126-day training window) and realised forward returns, aggregated over 8 evaluation periods. Reports IC mean, IC-IR (annualised), t-stat, and p-value. `compute_alpha_decay` — hit rate of the alpha signal direction across 5/21/63/126-day horizons for a single ticker. |
 | `weight_allocator.py` | **Risk-constrained weight allocation**: `compute_signal_weights` — converts robust BUY signals (PSR≥65%, IR_deflated>0) into portfolio weights using score = PSR × deflated IR × consistency boost; caps each position at 20%; iteratively redistributes excess to uncapped positions; flags portfolio-level FF5 factor exposures exceeding 1.5×. |
-| `paper_engine.py` | **Paper trading pipeline**: universe expansion (permanent watchlist + date-seeded random S&P 500 fill to 50 tickers), FF5 screening, watchlist pruning (Rule A: SELL signal; Rule B: HOLD > 30 days), watchlist promotion, portfolio risk snapshot (EWMA VaR, beta vs SPY, HHI), pre-trade risk gates, IR-proportional order sizing, Alpaca order execution. |
+| `paper_engine.py` | **Paper trading pipeline**: market-calendar gate (`is_market_open`), universe expansion (permanent watchlist + date-seeded random S&P 500 fill to 50 tickers), FF5 screening, watchlist pruning (Rule A: SELL signal; Rule B: HOLD > 30 days), watchlist promotion, portfolio risk snapshot (Cornish-Fisher VaR, beta vs SPY, HHI), pre-trade risk gates (incl. VIX halt), trailing-stop/stop-loss exits, earnings-date avoidance, IR-proportional **fractional-share** order sizing, rebalance trim/top-up with CGT friction, order idempotency (`cancel_all_orders`), durable NAV history + trade log + performance metrics, Alpaca order execution. |
 
 ### `backtest/`
 
@@ -376,7 +376,11 @@ Current candidates in `config/watchlist.csv`: TLT, IEF, AGG (Treasuries), GLD.
 
 ## Paper Trading (`RUN_MODE=paper_trade`)
 
-Runs nightly at 22:00 UTC via `.github/workflows/paper_trade.yml`, 30 minutes after the full daily pipeline. Completely isolated from the portfolio risk pipeline — no shared state beyond the shared watchlist and FF5 price cache.
+Runs at **13:45 UTC** (09:45 ET, 15 minutes after the US open) as part of `daily_run.yml`, and again at 22:00 UTC via `.github/workflows/paper_trade.yml`. The market-calendar gate (below) means only sessions when Alpaca reports the market open will actually place orders — the 22:00 run no-ops order entry on a normal day and just refreshes screening / NAV. Isolated from the portfolio risk pipeline beyond the shared watchlist and FF5 price cache.
+
+### Market-calendar gate
+
+Before anything else the engine calls Alpaca `/v2/clock` (`is_market_open`). When the market is closed, **all new buys and rebalances are suppressed** (exits still evaluate), the email carries a yellow "market closed" banner, and no orders are submitted. This prevents queuing orders against a closed book on holidays or off-hours dispatches.
 
 ### Pipeline
 
@@ -394,23 +398,38 @@ Runs nightly at 22:00 UTC via `.github/workflows/paper_trade.yml`, 30 minutes af
 6. **Exit orders (bypass all risk gates)** — evaluated before any new entry:
    - **Signal exit**: a held position whose *raw or robust* signal is SELL is closed (asymmetric on purpose — exit fast)
    - **Stop-loss**: a held position whose Alpaca unrealised P&L falls below `−stop_loss_pct` (default −15%) is closed
+   - **Trailing-stop**: each position's all-time-high price is tracked in a durable watermark file; the position is closed when price falls more than `trailing_stop_pct` (default 15%) below that high
 7. **Pre-trade risk gates** — checked before opening any new position (exit/close orders bypass all gates):
 
    | Gate | Default threshold |
    |---|---|
+   | Market open (Alpaca `/v2/clock`) | must be open |
    | Max open positions | 10 |
    | Portfolio 1-day VaR_95 (Cornish-Fisher) | > 5% |
    | Portfolio beta vs SPY | > 1.5× |
    | Equity drawdown from `starting_equity` | > 10% |
+   | VIX close | > 25 |
 
 8. **Order entry & sizing** —
    - A new BUY requires a **robust BUY** signal — the naive t(α) signal alone is not sufficient, which guards against data-snooped false positives from the daily random S&P 500 draw
+   - **Earnings avoidance**: a candidate is skipped if its next earnings date is within `earnings_avoid_days` (default 3) calendar days; earnings dates come from `yf.Ticker().calendar` and are cached per-day under `cache/`
    - IR-proportional allocation: each new BUY targets `equity × (IR_i / ΣIR)`, capped at `max_position_pct` (15%); higher-conviction (higher IR) names get a larger slice
+   - **Fractional shares**: order quantity is `target_value / price` rounded to 6 decimals (min 0.001 share), so small accounts and high-priced names still get filled
    - Total entries are bounded by available **buying power** — orders that cannot be funded are skipped rather than truncated; unfilled capacity stays as cash
+9. **Rebalance trim / top-up** — held auto-promoted BUY positions whose weight has drifted more than `rebalance_threshold` (5%) from target are trimmed or topped up. Trimming a **winner** is dampened by **CGT friction**: the effective trim threshold is inflated by `gain_frac × cgt_rate` (Irish 33%), so unrealised gains are not churned for marginal rebalancing benefit.
+10. **Order idempotency** — when live (not dry-run) and the market is open, `cancel_all_orders` clears any stale/open orders before submitting, so an overlapping or double-scheduled run can't double-fill.
+
+### NAV tracking & performance
+
+After each run the engine appends a `{date, equity, cash}` snapshot to a durable NAV history (same-day snapshots overwrite). From that history it computes **total return, annualised Sharpe & Sortino (×√252), and max drawdown**, which are surfaced in a Performance section of the paper-trade email.
+
+### Durable state
+
+NAV history, the trade log, and trailing-stop watermarks live under **`data/paper_state/`** (committed by CI), **not** `cache/` — the GitHub Actions cache is ephemeral and evicted, so anything needed across runs for performance metrics must be committed. Files: `paper_nav_history.json`, `paper_trade_log.json`, `paper_highs.json`.
 
 ### Watchlist auto-management
 
-The promoted/pruned state is committed back to `watchlist.csv` by GitHub Actions after each run (`[skip ci]`). The full daily pipeline (`RUN_MODE=full`) picks up newly promoted tickers on its next run.
+The promoted/pruned watchlist **and** the `data/paper_state/` files are committed back to the repo by GitHub Actions after each run (`[skip ci]`; `git pull --rebase` before push to avoid non-fast-forward races). The full daily pipeline (`RUN_MODE=full`) picks up newly promoted tickers on its next run.
 
 ### Configuration
 
@@ -524,6 +543,11 @@ paper_trade:
   max_drawdown_halt: 0.10  # halt new buys if equity down > 10% from starting_equity
   starting_equity: 100000  # Alpaca paper account starting equity (USD)
   stop_loss_pct: 0.15      # close any position whose unrealised loss exceeds 15%
+  trailing_stop_pct: 0.15  # close if price falls >15% from the position's all-time high
+  rebalance_threshold: 0.05 # trim/top-up held BUY positions when weight drifts > 5%
+  cgt_rate: 0.33           # Irish CGT rate; inflates effective trim threshold on winners
+  vix_halt_threshold: 25   # halt new buys when VIX closes above this level
+  earnings_avoid_days: 3   # skip opening a position if earnings within this many days
 ```
 
 ### `config/thresholds.yaml`
@@ -612,23 +636,39 @@ python scheduler.py
 
 ---
 
+## Testing
+
+```bash
+pytest -q tests/
+```
+
+| File | Coverage |
+|---|---|
+| `tests/test_risk_math.py` | Core risk math in `risk/risk_engine.py` — Cornish-Fisher quantile & VaR (incl. quantile-dependent kurtosis behaviour), EWMA VaR/variance series, EVT/GPD VaR, historical VaR/CVaR, max drawdown, HHI, Sharpe. Synthetic data only — no network. |
+| `tests/test_paper_engine.py` | Paper-trade order generation — every risk gate (positions/VaR/beta/drawdown/VIX), IR-proportional sizing (cap + budget), no-buys-when-blocked / market-closed, SELL exit, CGT-friction trim suppression, performance metrics, earnings short-circuit. Runs with `dry_run=True`. |
+
+The same `pytest -q tests/` step runs in CI on every push/PR before the import smoke test.
+
+---
+
 ## GitHub Actions
 
 ### Workflows
 
 | File | Trigger | What it does |
 |---|---|---|
-| `daily_run.yml` | Cron × 2/day + manual dispatch | Resolves `RUN_MODE` from UTC hour; runs `main.py`; sends bilingual report |
-| `paper_trade.yml` | Cron 22:00 UTC Mon–Fri + manual dispatch | Paper trading pipeline; commits updated `watchlist.csv` back to repo |
-| `ci.yml` | Push/PR to main or master | Syntax-checks all Python files; import smoke test including factor model, attribution, decision trace, and report section assertions |
+| `daily_run.yml` | Cron × 3/day + manual dispatch | Resolves `RUN_MODE` from UTC hour (alert_check / paper_trade / full); runs `main.py`; sends bilingual report; commits `watchlist.csv` + `data/paper_state/` on paper_trade runs (`contents: write`) |
+| `paper_trade.yml` | Cron 22:00 UTC Mon–Fri + manual dispatch | Paper trading pipeline; commits updated `watchlist.csv` + `data/paper_state/` back to repo (`git pull --rebase` before push) |
+| `ci.yml` | Push/PR to main or master | Syntax-checks all Python files; runs **pytest** (`tests/`); import smoke test including factor model, attribution, decision trace, and report section assertions |
 
 ### Cron Schedule
 
 | UTC time | Dublin (IST) | New York (ET) | Mode |
 |---|---|---|---|
+| 13:45 | 14:45 | 09:45 | `paper_trade` (15 min after open) |
 | 14:00 | 15:00 | 10:00 | `alert_check` |
 | 21:30 | 22:30 | 17:30 | `full` |
-| 22:00 | 23:00 | 18:00 | `paper_trade` |
+| 22:00 | 23:00 | 18:00 | `paper_trade` (refresh; market-gated) |
 
 ### Setup
 
@@ -653,5 +693,7 @@ python scheduler.py
 | Charts | `matplotlib` (headless Agg, CJK font fallback — CID-embedded PNG) |
 | Backtest | `vectorbt` (optional, SMA crossover), walk-forward (built-in) |
 | Email | `smtplib` (stdlib), `sendgrid` |
+| Paper trading | Alpaca paper REST API (`requests`) — fractional orders, market clock |
+| Testing | `pytest` (risk math + paper-engine unit tests, run in CI) |
 | Scheduling | `APScheduler` / GitHub Actions |
 | Config | `PyYAML`, `python-dotenv` |

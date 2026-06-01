@@ -353,6 +353,7 @@ if __name__ == "__main__":
     cfg     = load_config()
     log_cfg = cfg.get("logging", {})
     setup_logging(log_cfg.get("level", "INFO"), log_cfg.get("file", "logs/agent.log"))
+    logger = logging.getLogger("main")
 
     mode = os.environ.get("RUN_MODE", "full")
 
@@ -368,3 +369,4 @@ if __name__ == "__main__":
 
     else:
         logger.error(f"Unknown RUN_MODE: {mode!r}. Use: portfolio | full | alert_check | backtest | paper_trade")
+        sys.exit(1)

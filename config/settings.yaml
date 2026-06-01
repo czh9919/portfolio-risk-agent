@@ -55,3 +55,5 @@ paper_trade:
   trailing_stop_pct: 0.15  # close if price falls >15% from the position's all-time high
   rebalance_threshold: 0.05 # trim/top-up held BUY positions when weight drifts > 5%
   cgt_rate: 0.33            # Irish CGT rate; inflates effective trim threshold on winners
+  vix_halt_threshold: 25    # halt new buys when VIX closes above this level
+  earnings_avoid_days: 3    # skip opening new position if earnings within this many days

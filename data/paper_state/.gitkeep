@@ -1,0 +1,2 @@
+# Durable paper-trade state (NAV history, trade log, trailing-stop watermarks).
+# Committed by the paper_trade CI workflows so metrics survive between runs.

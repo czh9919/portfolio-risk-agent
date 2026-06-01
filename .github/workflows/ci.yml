@@ -47,6 +47,9 @@ jobs:
             notify/mailer.py notify/report_gen.py notify/chart.py
           echo "All files pass syntax check"
 
+      - name: Unit tests (pytest)
+        run: pytest -q tests/
+
       - name: Import smoke test
         run: |
           python - <<'EOF'

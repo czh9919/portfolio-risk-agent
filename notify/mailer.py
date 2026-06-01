@@ -179,69 +179,101 @@ def send_combined_alert(alerts: list[dict]):
     today = date.today().isoformat()
     count = len(alerts)
 
-    sev_color = {"HIGH": "#e74c3c", "MEDIUM": "#e67e22", "LOW": "#f1c40f"}
+    sev_color = {"HIGH": "#e74c3c", "MEDIUM": "#e67e22", "LOW": "#f39c12"}
+    sev_bg    = {"HIGH": "#fdf0ef", "MEDIUM": "#fef5ec", "LOW": "#fefbe8"}
 
-    def _table_rows(lang: str) -> str:
+    def _alert_rows() -> str:
         rows = ""
         for a in alerts:
-            label = a["label_en"] if lang == "en" else (a.get("label_zh") or a["label_en"])
-            color = sev_color.get(a.get("severity", "HIGH"), "#e74c3c")
-            rows += (
-                f"<tr>"
-                f"<td style='padding:7px;font-weight:bold'>{label}</td>"
-                f"<td style='padding:7px;color:{color};font-weight:bold'>{a['value']}</td>"
-                f"<td style='padding:7px;color:#7f8c8d'>{a['threshold']}</td>"
-                f"<td style='padding:7px;color:{color}'>{a.get('severity','HIGH')}</td>"
-                f"</tr>"
-            )
+            sev  = a.get("severity", "HIGH")
+            fc   = sev_color.get(sev, "#e74c3c")
+            bg   = sev_bg.get(sev, "#fdf0ef")
+            rows += f"""
+<tr style="background:{bg}">
+  <td style="padding:12px 10px;border-bottom:1px solid #eee;word-break:break-word">
+    <span style="font-size:14px;font-weight:bold;color:#2c3e50">{a['label_en']}</span><br>
+    <span style="font-size:12px;color:#7f8c8d">{a.get('label_zh') or a['label_en']}</span>
+  </td>
+  <td style="padding:12px 10px;border-bottom:1px solid #eee;text-align:center;
+             font-size:16px;font-weight:bold;color:{fc};white-space:nowrap">
+    {a['value']}
+  </td>
+  <td style="padding:12px 10px;border-bottom:1px solid #eee;text-align:center;
+             font-size:13px;color:#7f8c8d;white-space:nowrap">
+    {a['threshold']}
+  </td>
+  <td style="padding:12px 10px;border-bottom:1px solid #eee;text-align:center;
+             white-space:nowrap">
+    <span style="background:{fc};color:#fff;font-size:11px;font-weight:bold;
+                 padding:3px 7px;border-radius:3px">{sev}</span>
+  </td>
+</tr>"""
         return rows
 
-    table_style = (
-        "border-collapse:collapse;width:100%;font-family:Arial,sans-serif;"
-        "font-size:13px"
-    )
-    th_style = "background:#2c3e50;color:#fff;padding:8px;text-align:left"
+    html = f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Portfolio Alert</title>
+</head>
+<body style="margin:0;padding:0;background:#f5f6fa;font-family:Arial,Helvetica,sans-serif">
 
-    html = f"""
-<html><body style="font-family:Arial,sans-serif;font-size:13px;max-width:680px">
+<table width="100%" cellpadding="0" cellspacing="0" style="background:#f5f6fa">
+<tr><td align="center" style="padding:16px 8px">
 
-<h2 style="color:#e74c3c;margin-bottom:4px">
-  &#9888; Portfolio Alert — {count} metric(s) breached
-</h2>
-<p style="color:#7f8c8d;margin-top:0">{today}</p>
+  <table width="100%" cellpadding="0" cellspacing="0"
+         style="max-width:580px;background:#fff;border-radius:6px;
+                overflow:hidden;box-shadow:0 1px 4px rgba(0,0,0,.08)">
 
-<table border="1" cellpadding="0" cellspacing="0"
-       style="{table_style};border-color:#ddd;margin-bottom:24px">
-  <tr>
-    <th style="{th_style}">Metric</th>
-    <th style="{th_style}">Current</th>
-    <th style="{th_style}">Threshold</th>
-    <th style="{th_style}">Severity</th>
-  </tr>
-  {_table_rows("en")}
+    <!-- Header -->
+    <tr><td style="background:#e74c3c;padding:20px 20px 16px">
+      <p style="margin:0;font-size:22px;font-weight:bold;color:#fff">
+        &#9888; Portfolio Alert
+      </p>
+      <p style="margin:4px 0 0;font-size:13px;color:rgba(255,255,255,.8)">
+        {count} metric(s) breached &nbsp;·&nbsp; {today}
+      </p>
+      <p style="margin:2px 0 0;font-size:12px;color:rgba(255,255,255,.7)">
+        {count} 项指标触发阈值
+      </p>
+    </td></tr>
+
+    <!-- Alert table -->
+    <tr><td style="padding:0">
+      <table width="100%" cellpadding="0" cellspacing="0">
+        <tr style="background:#2c3e50">
+          <th style="padding:10px;text-align:left;font-size:12px;
+                     color:#fff;font-weight:bold;width:40%">
+            Metric / 指标
+          </th>
+          <th style="padding:10px;text-align:center;font-size:12px;
+                     color:#fff;font-weight:bold;width:20%">
+            Current / 当前
+          </th>
+          <th style="padding:10px;text-align:center;font-size:12px;
+                     color:#fff;font-weight:bold;width:20%">
+            Limit / 阈值
+          </th>
+          <th style="padding:10px;text-align:center;font-size:12px;
+                     color:#fff;font-weight:bold;width:20%">
+            Level
+          </th>
+        </tr>
+        {_alert_rows()}
+      </table>
+    </td></tr>
+
+    <!-- Footer -->
+    <tr><td style="padding:14px 20px;border-top:1px solid #ecf0f1">
+      <p style="margin:0;font-size:11px;color:#bdc3c7;text-align:center">
+        Stock AI Agent &nbsp;·&nbsp; Review full report for details.
+      </p>
+    </td></tr>
+
+  </table>
+</td></tr>
 </table>
-
-<hr style="border:none;border-top:1px solid #ecf0f1;margin:16px 0">
-
-<h2 style="color:#e74c3c;margin-bottom:4px">
-  &#9888; 投资组合预警 — {count} 项指标触发
-</h2>
-<p style="color:#7f8c8d;margin-top:0">{today}</p>
-
-<table border="1" cellpadding="0" cellspacing="0"
-       style="{table_style};border-color:#ddd">
-  <tr>
-    <th style="{th_style}">指标</th>
-    <th style="{th_style}">当前值</th>
-    <th style="{th_style}">阈值</th>
-    <th style="{th_style}">严重性</th>
-  </tr>
-  {_table_rows("zh")}
-</table>
-
-<p style="color:#95a5a6;font-size:11px;margin-top:16px">
-  Generated by Stock AI Agent · Review full report for details.
-</p>
 </body></html>
 """
 

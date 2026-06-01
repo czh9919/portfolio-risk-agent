@@ -90,64 +90,138 @@ def _send_paper_summary(
     buys  = [o for o in orders if o.get("side") == "buy"]
     sells = [o for o in orders if o.get("side") == "sell"]
 
-    def _rows(lst: list[dict]) -> str:
-        if not lst:
-            return "<tr><td colspan='5' style='color:#999;padding:6px'>—</td></tr>"
+    def _order_rows() -> str:
+        if not orders:
+            return ("<tr><td colspan='4' style='padding:14px;text-align:center;"
+                    "color:#bdc3c7;font-size:13px'>No orders today</td></tr>")
         rows = ""
-        for o in lst:
-            side_color = "#27ae60" if o.get("side") == "buy" else "#e74c3c"
-            rows += (
-                f"<tr>"
-                f"<td style='padding:5px'><b>{o.get('ticker','')}</b></td>"
-                f"<td style='color:{side_color};padding:5px'>{o.get('side','').upper()}</td>"
-                f"<td style='padding:5px'>{o.get('qty', '—')}</td>"
-                f"<td style='padding:5px'>${o.get('price_est', 0) or 0:.2f}</td>"
-                f"<td style='padding:5px;font-size:11px;color:#555'>{o.get('reason','')}</td>"
-                f"</tr>"
-            )
+        for o in orders:
+            side      = o.get("side", "")
+            sc        = "#27ae60" if side == "buy" else "#e74c3c"
+            sc_bg     = "#eafaf1" if side == "buy" else "#fdf0ef"
+            price_str = f"${o.get('price_est', 0) or 0:.2f}"
+            reason    = o.get("reason", "")
+            rows += f"""
+<tr style="background:{sc_bg}">
+  <td style="padding:10px 10px 4px;font-size:15px;font-weight:bold;
+             color:#2c3e50;border-top:1px solid #eee">
+    {o.get('ticker','')}
+  </td>
+  <td style="padding:10px 10px 4px;text-align:center;border-top:1px solid #eee">
+    <span style="background:{sc};color:#fff;font-size:11px;font-weight:bold;
+                 padding:3px 8px;border-radius:3px">{side.upper()}</span>
+  </td>
+  <td style="padding:10px 10px 4px;text-align:center;font-size:14px;
+             border-top:1px solid #eee;color:#2c3e50">
+    {o.get('qty','—')}
+  </td>
+  <td style="padding:10px 10px 4px;text-align:right;font-size:14px;
+             border-top:1px solid #eee;color:#2c3e50;white-space:nowrap">
+    {price_str}
+  </td>
+</tr>
+<tr style="background:{sc_bg}">
+  <td colspan="4" style="padding:2px 10px 10px;font-size:11px;color:#7f8c8d;
+                          word-break:break-word">
+    {reason}
+  </td>
+</tr>"""
         return rows
 
-    equity  = account.get("equity", 0) or 0
-    cash    = account.get("cash", 0) or 0
-    n_pos   = account.get("n_positions", 0) or 0
-    var_95  = (risk.get("var_1d_95", 0) or 0) * 100
-    beta    = risk.get("portfolio_beta", 0) or 0
-    hhi     = risk.get("hhi", 0) or 0
+    equity = account.get("equity", 0) or 0
+    cash   = account.get("cash", 0) or 0
+    n_pos  = account.get("n_positions", 0) or 0
+    var_95 = (risk.get("var_1d_95", 0) or 0) * 100
+    beta   = risk.get("portfolio_beta", 0) or 0
+    hhi    = risk.get("hhi", 0) or 0
 
-    html = f"""
-<html><body style="font-family:Arial,sans-serif;font-size:13px;color:#2c3e50;max-width:700px">
-<h2 style="margin-bottom:4px">📄 Paper Trade Summary — {dt.date.today()}</h2>
-<p style="color:#7f8c8d;margin-top:0">{len(buys)} buy · {len(sells)} sell · {len(orders)} total orders</p>
+    def _stat(label: str, value: str, bold: bool = False) -> str:
+        v = f"<b>{value}</b>" if bold else value
+        return (f"<tr>"
+                f"<td style='padding:8px 12px;color:#7f8c8d;font-size:13px'>{label}</td>"
+                f"<td style='padding:8px 12px;font-size:14px;text-align:right'>{v}</td>"
+                f"</tr>")
 
-<table style="border-collapse:collapse;margin-bottom:16px;width:100%">
-<tr style="background:#ecf0f1">
-  <th style="padding:6px;text-align:left">Account</th>
-  <th style="padding:6px;text-align:left">Risk Snapshot</th>
-</tr><tr>
-  <td style="padding:8px;vertical-align:top">
-    Equity: <b>${equity:,.0f}</b><br>
-    Cash: ${cash:,.0f}<br>
-    Open positions: {n_pos}
-  </td>
-  <td style="padding:8px;vertical-align:top">
-    VaR₉₅ (1d): <b>{var_95:.1f}%</b><br>
-    Beta vs SPY: {beta:.2f}<br>
-    HHI: {hhi:.3f}
-  </td>
-</tr></table>
+    html = f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Paper Trade Summary</title>
+</head>
+<body style="margin:0;padding:0;background:#f5f6fa;
+             font-family:Arial,Helvetica,sans-serif">
 
-<table border="1" cellpadding="0" cellspacing="0"
-       style="border-collapse:collapse;width:100%;border-color:#ddd">
-<tr style="background:#2c3e50;color:#fff">
-  <th style="padding:6px">Ticker</th><th style="padding:6px">Side</th>
-  <th style="padding:6px">Qty</th><th style="padding:6px">Price</th>
-  <th style="padding:6px;text-align:left">Reason</th>
-</tr>
-{_rows(orders)}
+<table width="100%" cellpadding="0" cellspacing="0" style="background:#f5f6fa">
+<tr><td align="center" style="padding:16px 8px">
+
+  <table width="100%" cellpadding="0" cellspacing="0"
+         style="max-width:580px;background:#fff;border-radius:6px;
+                overflow:hidden;box-shadow:0 1px 4px rgba(0,0,0,.08)">
+
+    <!-- Header -->
+    <tr><td style="background:#2c3e50;padding:20px 20px 16px">
+      <p style="margin:0;font-size:20px;font-weight:bold;color:#fff">
+        Paper Trade Summary
+      </p>
+      <p style="margin:4px 0 0;font-size:13px;color:rgba(255,255,255,.7)">
+        {dt.date.today()} &nbsp;·&nbsp;
+        {len(buys)} buy &nbsp;·&nbsp; {len(sells)} sell
+      </p>
+    </td></tr>
+
+    <!-- Account stats -->
+    <tr><td style="padding:0">
+      <table width="100%" cellpadding="0" cellspacing="0"
+             style="border-bottom:2px solid #ecf0f1">
+        <tr style="background:#f8f9fa">
+          <td colspan="2" style="padding:10px 12px;font-size:11px;font-weight:bold;
+                                  color:#95a5a6;letter-spacing:.5px">
+            ACCOUNT
+          </td>
+        </tr>
+        {_stat("Equity", f"${equity:,.0f}", bold=True)}
+        {_stat("Cash", f"${cash:,.0f}")}
+        {_stat("Open positions", str(n_pos))}
+        <tr style="background:#f8f9fa">
+          <td colspan="2" style="padding:10px 12px;font-size:11px;font-weight:bold;
+                                  color:#95a5a6;letter-spacing:.5px">
+            RISK SNAPSHOT
+          </td>
+        </tr>
+        {_stat("VaR₉₅ (1-day)", f"{var_95:.1f}%", bold=True)}
+        {_stat("Beta vs SPY", f"{beta:.2f}")}
+        {_stat("HHI concentration", f"{hhi:.3f}")}
+      </table>
+    </td></tr>
+
+    <!-- Orders -->
+    <tr><td style="padding:0">
+      <table width="100%" cellpadding="0" cellspacing="0">
+        <tr style="background:#2c3e50">
+          <th style="padding:10px;text-align:left;font-size:12px;
+                     color:#fff;font-weight:bold;width:30%">Ticker</th>
+          <th style="padding:10px;text-align:center;font-size:12px;
+                     color:#fff;font-weight:bold;width:20%">Side</th>
+          <th style="padding:10px;text-align:center;font-size:12px;
+                     color:#fff;font-weight:bold;width:20%">Qty</th>
+          <th style="padding:10px;text-align:right;font-size:12px;
+                     color:#fff;font-weight:bold;width:30%">Price</th>
+        </tr>
+        {_order_rows()}
+      </table>
+    </td></tr>
+
+    <!-- Footer -->
+    <tr><td style="padding:14px 20px;border-top:1px solid #ecf0f1">
+      <p style="margin:0;font-size:11px;color:#bdc3c7;text-align:center">
+        Paper account only — no real money &nbsp;·&nbsp; Stock AI Agent
+      </p>
+    </td></tr>
+
+  </table>
+</td></tr>
 </table>
-<p style="color:#95a5a6;font-size:11px;margin-top:12px">
-  Paper account only — no real money. Generated by Stock AI Agent.
-</p>
 </body></html>
 """
 

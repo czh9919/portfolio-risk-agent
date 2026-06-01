@@ -1,0 +1,12 @@
+[
+  {
+    "timestamp": "2026-06-01T21:28:06Z",
+    "ticker": "LITE",
+    "side": "sell",
+    "qty": 13.265237,
+    "price_est": 905.0,
+    "value_usd": 12005.039485000001,
+    "reason": "REBALANCE TRIM  cur=27.1%  target=15.0%  delta=-12.1%",
+    "equity": 99503.61
+  }
+]

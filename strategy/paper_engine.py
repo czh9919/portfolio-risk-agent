@@ -358,6 +358,7 @@ def _rebalance_orders(
     risk_weights:        dict,
     max_pos_pct:         float,
     rebalance_threshold: float,
+    cgt_rate:            float,
     gates_allow_buys:    bool,
     remaining_bp:        float,
     dry_run:             bool,
@@ -368,6 +369,12 @@ def _rebalance_orders(
 
     Only acts on tickers where robust_signal == BUY and already held.
     Trims bypass risk gates; top-ups respect them and consume buying power.
+
+    CGT friction (Irish 33%): for profitable positions, the effective trim
+    threshold is raised by gain_fraction × cgt_rate so that small drifts on
+    large winners are left alone rather than triggering a taxable disposal.
+    Loss positions have zero friction and are trimmed at the base threshold.
+
     Returns (orders, updated_remaining_bp).
     """
     from brokers.alpaca import place_order
@@ -392,9 +399,6 @@ def _rebalance_orders(
         cur_w   = float(risk_weights.get(ticker, 0.0))
         delta_w = tgt - cur_w   # positive = underweight, negative = overweight
 
-        if abs(delta_w) < rebalance_threshold:
-            continue
-
         pd_obj = price_data.get(ticker)
         if pd_obj is None or pd_obj.closes is None or pd_obj.closes.empty:
             continue
@@ -403,7 +407,21 @@ def _rebalance_orders(
             continue
 
         if delta_w < 0:
-            # Overweight — trim (always allowed)
+            # Overweight — trim (always allowed, but CGT raises effective threshold)
+            try:
+                plpc = float(positions[ticker].get("unrealized_plpc") or 0.0)
+            except (TypeError, ValueError):
+                plpc = 0.0
+            gain_frac       = max(0.0, plpc / (1.0 + plpc)) if plpc > 0 else 0.0
+            cgt_friction    = gain_frac * cgt_rate
+            effective_thresh = rebalance_threshold + cgt_friction
+            if abs(delta_w) < effective_thresh:
+                logger.debug(
+                    f"Paper: REBALANCE skip {ticker}  |Δw|={abs(delta_w)*100:.1f}%"
+                    f" < threshold {effective_thresh*100:.1f}% (incl. CGT friction"
+                    f" {cgt_friction*100:.1f}%)"
+                )
+                continue
             trim_qty = int(abs(delta_w) * equity / price)
             if trim_qty < 1:
                 continue
@@ -429,7 +447,9 @@ def _rebalance_orders(
                     logger.warning(f"Paper: rebalance trim {ticker} failed — {e}")
 
         else:
-            # Underweight — top up (only if gates pass and buying power allows)
+            # Underweight — top up (buying has no CGT impact; gate + BP check only)
+            if abs(delta_w) < rebalance_threshold:
+                continue
             if not gates_allow_buys:
                 continue
             topup_val = min(delta_w * equity, remaining_bp)
@@ -554,12 +574,14 @@ def generate_orders(
 
     # ── Rebalance existing BUY-signal holdings ────────────────────────────────
     rebal_threshold = float((paper_cfg or {}).get("rebalance_threshold", 0.05))
+    cgt_rate        = float((paper_cfg or {}).get("cgt_rate", 0.33))
     if risk is not None and rebal_threshold > 0:
         rebal_orders, remaining_bp = _rebalance_orders(
             results, positions, equity, price_data,
             risk_weights=risk.get("weights", {}),
             max_pos_pct=max_pos_pct,
             rebalance_threshold=rebal_threshold,
+            cgt_rate=cgt_rate,
             gates_allow_buys=allow_buys,
             remaining_bp=remaining_bp,
             dry_run=dry_run,

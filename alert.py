@@ -8,7 +8,7 @@ import logging
 from datetime import date, datetime, timedelta
 from pathlib import Path
 
-from notify.mailer import send_alert
+from notify.mailer import send_combined_alert
 
 logger = logging.getLogger(__name__)
 
@@ -55,11 +55,14 @@ _ALERT_TO_THRESH_KEY = {
 
 
 def check_and_alert(metrics: dict, thresholds: dict):
-    """Fire alert emails for any RED metric that hasn't been sent in 24h."""
+    """
+    Collect all RED metrics not yet sent today, then fire ONE combined email.
+    Reduces alert volume from 2×N emails to a single digest per check cycle.
+    """
     alert_map = metrics.get("alerts", {})
     t_cfg     = thresholds.get("alerts", {})
 
-    fired = False
+    to_fire: list[dict] = []
     for key, rag in alert_map.items():
         if rag != "RED":
             continue
@@ -68,19 +71,30 @@ def check_and_alert(metrics: dict, thresholds: dict):
             logger.info(f"Alert {key} suppressed (already sent today)")
             continue
 
-        cfg        = t_cfg.get(_ALERT_TO_THRESH_KEY.get(key, key), {})
-        value      = _get_value(metrics, key)
-        threshold  = cfg.get("threshold", "?")
-        label_en   = cfg.get("label_en", key)
-        label_zh   = cfg.get("label_zh", key)
-        severity   = cfg.get("severity", "HIGH")
+        cfg      = t_cfg.get(_ALERT_TO_THRESH_KEY.get(key, key), {})
+        value    = _get_value(metrics, key)
+        severity = cfg.get("severity", "HIGH")
+        logger.warning(
+            f"ALERT [{severity}] {cfg.get('label_en', key)}: "
+            f"{value} vs threshold {cfg.get('threshold', '?')}"
+        )
+        to_fire.append({
+            "key":       key,
+            "dedup_key": dedup_key,
+            "label_en":  cfg.get("label_en", key),
+            "label_zh":  cfg.get("label_zh", key),
+            "value":     value,
+            "threshold": str(cfg.get("threshold", "?")),
+            "severity":  severity,
+        })
 
-        logger.warning(f"ALERT [{severity}] {label_en}: {value} vs threshold {threshold}")
-        send_alert(label_en, str(value), str(threshold), label_zh)
-        _mark_fired(dedup_key)
-        fired = True
+    if not to_fire:
+        return False
 
-    return fired
+    send_combined_alert(to_fire)
+    for a in to_fire:
+        _mark_fired(a["dedup_key"])
+    return True
 
 
 def _get_value(metrics: dict, key: str) -> str:

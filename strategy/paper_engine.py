@@ -92,14 +92,18 @@ def _send_paper_summary(
 
     def _order_rows() -> str:
         if not orders:
-            return ("<tr><td colspan='4' style='padding:14px;text-align:center;"
-                    "color:#bdc3c7;font-size:13px'>No orders today</td></tr>")
+            return (
+                "<tr><td colspan='4' style='padding:14px;text-align:center;"
+                "color:#bdc3c7;font-size:13px'>No orders today / 今日无订单</td></tr>"
+            )
         rows = ""
         for o in orders:
             side      = o.get("side", "")
             sc        = "#27ae60" if side == "buy" else "#e74c3c"
             sc_bg     = "#eafaf1" if side == "buy" else "#fdf0ef"
-            price_str = f"${o.get('price_est', 0) or 0:.2f}"
+            side_zh   = "买入" if side == "buy" else "卖出"
+            px        = o.get("price_est")
+            price_str = f"${px:.2f}" if px is not None else "—"
             reason    = o.get("reason", "")
             rows += f"""
 <tr style="background:{sc_bg}">
@@ -109,7 +113,9 @@ def _send_paper_summary(
   </td>
   <td style="padding:10px 10px 4px;text-align:center;border-top:1px solid #eee">
     <span style="background:{sc};color:#fff;font-size:11px;font-weight:bold;
-                 padding:3px 8px;border-radius:3px">{side.upper()}</span>
+                 padding:3px 8px;border-radius:3px">
+      {side.upper()} / {side_zh}
+    </span>
   </td>
   <td style="padding:10px 10px 4px;text-align:center;font-size:14px;
              border-top:1px solid #eee;color:#2c3e50">
@@ -121,8 +127,8 @@ def _send_paper_summary(
   </td>
 </tr>
 <tr style="background:{sc_bg}">
-  <td colspan="4" style="padding:2px 10px 10px;font-size:11px;color:#7f8c8d;
-                          word-break:break-word">
+  <td colspan="4" style="padding:2px 10px 10px;font-size:11px;
+                          color:#7f8c8d;word-break:break-word">
     {reason}
   </td>
 </tr>"""
@@ -135,12 +141,20 @@ def _send_paper_summary(
     beta   = risk.get("portfolio_beta", 0) or 0
     hhi    = risk.get("hhi", 0) or 0
 
-    def _stat(label: str, value: str, bold: bool = False) -> str:
+    def _stat(label_en: str, label_zh: str, value: str, bold: bool = False) -> str:
         v = f"<b>{value}</b>" if bold else value
-        return (f"<tr>"
-                f"<td style='padding:8px 12px;color:#7f8c8d;font-size:13px'>{label}</td>"
-                f"<td style='padding:8px 12px;font-size:14px;text-align:right'>{v}</td>"
-                f"</tr>")
+        return (
+            f"<tr>"
+            f"<td style='padding:8px 12px;font-size:13px'>"
+            f"  <span style='color:#555'>{label_en}</span><br>"
+            f"  <span style='color:#aaa;font-size:11px'>{label_zh}</span>"
+            f"</td>"
+            f"<td style='padding:8px 12px;font-size:14px;text-align:right'>{v}</td>"
+            f"</tr>"
+        )
+
+    buys_zh  = f"{len(buys)} 买入"
+    sells_zh = f"{len(sells)} 卖出"
 
     html = f"""<!DOCTYPE html>
 <html lang="en">
@@ -162,51 +176,63 @@ def _send_paper_summary(
     <!-- Header -->
     <tr><td style="background:#2c3e50;padding:20px 20px 16px">
       <p style="margin:0;font-size:20px;font-weight:bold;color:#fff">
-        Paper Trade Summary
+        Paper Trade Summary &nbsp;<span style="font-size:14px;font-weight:normal;
+        color:rgba(255,255,255,.7)">/ 模拟交易摘要</span>
       </p>
-      <p style="margin:4px 0 0;font-size:13px;color:rgba(255,255,255,.7)">
+      <p style="margin:6px 0 0;font-size:13px;color:rgba(255,255,255,.7)">
         {dt.date.today()} &nbsp;·&nbsp;
-        {len(buys)} buy &nbsp;·&nbsp; {len(sells)} sell
+        {len(buys)} buy / {buys_zh} &nbsp;·&nbsp;
+        {len(sells)} sell / {sells_zh}
       </p>
     </td></tr>
 
-    <!-- Account stats -->
+    <!-- Account + Risk stats -->
     <tr><td style="padding:0">
       <table width="100%" cellpadding="0" cellspacing="0"
              style="border-bottom:2px solid #ecf0f1">
+        <!-- Account header -->
         <tr style="background:#f8f9fa">
           <td colspan="2" style="padding:10px 12px;font-size:11px;font-weight:bold;
                                   color:#95a5a6;letter-spacing:.5px">
-            ACCOUNT
+            ACCOUNT / 账户
           </td>
         </tr>
-        {_stat("Equity", f"${equity:,.0f}", bold=True)}
-        {_stat("Cash", f"${cash:,.0f}")}
-        {_stat("Open positions", str(n_pos))}
+        {_stat("Equity", "净值", f"${equity:,.0f}", bold=True)}
+        {_stat("Cash", "现金", f"${cash:,.0f}")}
+        {_stat("Open positions", "持仓数", str(n_pos))}
+        <!-- Risk header -->
         <tr style="background:#f8f9fa">
           <td colspan="2" style="padding:10px 12px;font-size:11px;font-weight:bold;
                                   color:#95a5a6;letter-spacing:.5px">
-            RISK SNAPSHOT
+            RISK SNAPSHOT / 风险快照
           </td>
         </tr>
-        {_stat("VaR₉₅ (1-day)", f"{var_95:.1f}%", bold=True)}
-        {_stat("Beta vs SPY", f"{beta:.2f}")}
-        {_stat("HHI concentration", f"{hhi:.3f}")}
+        {_stat("VaR₉₅ (1-day)", "单日风险价值", f"{var_95:.1f}%", bold=True)}
+        {_stat("Beta vs SPY", "市场贝塔", f"{beta:.2f}")}
+        {_stat("HHI concentration", "集中度指数", f"{hhi:.3f}")}
       </table>
     </td></tr>
 
-    <!-- Orders -->
+    <!-- Orders table -->
     <tr><td style="padding:0">
       <table width="100%" cellpadding="0" cellspacing="0">
         <tr style="background:#2c3e50">
           <th style="padding:10px;text-align:left;font-size:12px;
-                     color:#fff;font-weight:bold;width:30%">Ticker</th>
+                     color:#fff;font-weight:bold;width:30%">
+            Ticker
+          </th>
           <th style="padding:10px;text-align:center;font-size:12px;
-                     color:#fff;font-weight:bold;width:20%">Side</th>
+                     color:#fff;font-weight:bold;width:22%">
+            Side / 方向
+          </th>
           <th style="padding:10px;text-align:center;font-size:12px;
-                     color:#fff;font-weight:bold;width:20%">Qty</th>
+                     color:#fff;font-weight:bold;width:18%">
+            Qty / 数量
+          </th>
           <th style="padding:10px;text-align:right;font-size:12px;
-                     color:#fff;font-weight:bold;width:30%">Price</th>
+                     color:#fff;font-weight:bold;width:30%">
+            Price / 价格
+          </th>
         </tr>
         {_order_rows()}
       </table>
@@ -215,7 +241,7 @@ def _send_paper_summary(
     <!-- Footer -->
     <tr><td style="padding:14px 20px;border-top:1px solid #ecf0f1">
       <p style="margin:0;font-size:11px;color:#bdc3c7;text-align:center">
-        Paper account only — no real money &nbsp;·&nbsp; Stock AI Agent
+        Paper account only — no real money &nbsp;·&nbsp; 仅模拟账户，非真实资金
       </p>
     </td></tr>
 
@@ -635,10 +661,12 @@ def _rebalance_orders(
             if trim_qty < 1:
                 continue
             orders.append({
-                "ticker": ticker, "side": "sell", "qty": trim_qty,
+                "ticker":    ticker, "side": "sell", "qty": trim_qty,
+                "price_est": price,
+                "value_usd": trim_qty * price,
                 "reason": (
                     f"REBALANCE TRIM  cur={cur_w*100:.1f}%"
-                    f"  target={tgt*100:.1f}%  Δ={delta_w*100:+.1f}%"
+                    f"  target={tgt*100:.1f}%  delta={delta_w*100:+.1f}%"
                 ),
             })
             if not dry_run:
@@ -663,10 +691,12 @@ def _rebalance_orders(
                 continue
             remaining_bp -= topup_qty * price
             orders.append({
-                "ticker": ticker, "side": "buy", "qty": topup_qty,
+                "ticker":    ticker, "side": "buy", "qty": topup_qty,
+                "price_est": price,
+                "value_usd": topup_qty * price,
                 "reason": (
                     f"REBALANCE TOPUP  cur={cur_w*100:.1f}%"
-                    f"  target={tgt*100:.1f}%  Δ={delta_w*100:+.1f}%"
+                    f"  target={tgt*100:.1f}%  delta={delta_w*100:+.1f}%"
                 ),
             })
             if not dry_run:
@@ -755,9 +785,14 @@ def generate_orders(
             if plpc >= -stop_loss_pct:
                 continue
             exiting.add(ticker)
+            _pd  = price_data.get(ticker)
+            _px  = float(_pd.closes.iloc[-1]) if (_pd and _pd.closes is not None and not _pd.closes.empty) else None
+            _qty = int(float(pos.get("qty") or 0))
             orders.append({
-                "ticker": ticker, "side": "sell",
-                "reason": f"STOP-LOSS  unrealised P&L {plpc*100:.1f}% < -{stop_loss_pct*100:.0f}%",
+                "ticker":    ticker, "side": "sell", "qty": _qty,
+                "price_est": _px,
+                "value_usd": _qty * _px if _px else None,
+                "reason":    f"STOP-LOSS  unrealised P&L {plpc*100:.1f}% < -{stop_loss_pct*100:.0f}%",
             })
             if not dry_run:
                 try:
@@ -786,12 +821,12 @@ def generate_orders(
             if drop >= trailing_pct:
                 exiting.add(ticker)
                 del watermarks[ticker]
+                _qty = int(float(pos.get("qty") or 0))
                 orders.append({
-                    "ticker": ticker, "side": "sell",
-                    "reason": (
-                        f"TRAILING STOP  {drop*100:.1f}% below high"
-                        f" ${new_wm:.2f}"
-                    ),
+                    "ticker":    ticker, "side": "sell", "qty": _qty,
+                    "price_est": price,
+                    "value_usd": _qty * price,
+                    "reason":    f"TRAILING STOP  {drop*100:.1f}% below high ${new_wm:.2f}",
                 })
                 if not dry_run:
                     try:

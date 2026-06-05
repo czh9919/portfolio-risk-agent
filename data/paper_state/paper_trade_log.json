@@ -18,5 +18,15 @@
     "value_usd": 11916.211019999999,
     "reason": "REBALANCE TRIM  cur=27.0%  target=15.0%  delta=-12.0%",
     "equity": 99435.69
+  },
+  {
+    "timestamp": "2026-06-05T22:26:10Z",
+    "ticker": "LITE",
+    "side": "sell",
+    "qty": 3,
+    "price_est": 863.6599731445312,
+    "value_usd": 2590.9799194335938,
+    "reason": "TRAILING STOP  16.1% below high $1029.15",
+    "equity": 100228.9
   }
 ]

@@ -547,7 +547,11 @@ def screen_universe(
 
         results.append(reg)
 
-    results.sort(key=lambda x: x.get("ir") or float("-inf"), reverse=True)
+    # nan-safe sort: treat NaN IR as -inf, but keep a legitimate IR of 0.0
+    results.sort(
+        key=lambda x: x.get("ir") if x.get("ir") == x.get("ir") else float("-inf"),
+        reverse=True,
+    )
     logger.info(f"FF5 screen: {len(results)}/{len(tickers)} tickers processed")
     return results
 
@@ -580,7 +584,16 @@ def promote_to_watchlist(
         logger.info("Watchlist promotion: no new candidates to promote")
         return []
 
+    # Guard against a file missing its final newline — appending would
+    # otherwise merge the first new row into the last existing line.
+    needs_nl = False
+    if watchlist_path.exists():
+        raw = watchlist_path.read_bytes()
+        needs_nl = bool(raw) and not raw.endswith(b"\n")
+
     with open(watchlist_path, "a", newline="", encoding="utf-8") as f:
+        if needs_nl:
+            f.write("\r\n")
         writer = csv.DictWriter(
             f, fieldnames=["ticker", "weight", "notes", "asset_class", "currency"]
         )
@@ -844,9 +857,18 @@ def _rebalance_orders(
     if not held_buys:
         return [], remaining_bp
 
+    # Targets must share the same basis as risk_weights (fraction of the WHOLE
+    # portfolio). The BUY sleeve keeps its current total weight and is merely
+    # redistributed IR-proportionally within itself. Normalising over the
+    # sleeve alone (summing to 1) would make every BUY name look underweight
+    # whenever non-BUY positions exist → perpetual top-ups each run.
+    sleeve_total = sum(float(risk_weights.get(r["ticker"], 0.0)) for r in held_buys)
+    if sleeve_total <= 0:
+        return [], remaining_bp
+
     irs      = np.array([max(float(r.get("ir") or 0), 0.01) for r in held_buys])
     raw_w    = irs / irs.sum()
-    target_w = np.minimum(raw_w, max_pos_pct)
+    target_w = np.minimum(raw_w * sleeve_total, max_pos_pct)
 
     orders: list[dict] = []
 

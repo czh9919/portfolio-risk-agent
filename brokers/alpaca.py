@@ -85,7 +85,8 @@ def get_open_orders() -> list[dict]:
 
 
 def cancel_all_orders() -> None:
-    requests.delete(f"{_PAPER_BASE}/v2/orders", headers=_headers(), timeout=_TIMEOUT)
+    r = requests.delete(f"{_PAPER_BASE}/v2/orders", headers=_headers(), timeout=_TIMEOUT)
+    r.raise_for_status()
 
 
 def place_order(

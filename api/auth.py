@@ -1,4 +1,6 @@
+import hmac
 import os
+import secrets
 from datetime import datetime, timedelta
 
 from jose import JWTError, jwt
@@ -6,27 +8,29 @@ from passlib.context import CryptContext
 from fastapi import Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordBearer
 
-SECRET_KEY = os.environ.get("WEB_SECRET_KEY", "change-me-in-production-32chars!!")
+# No hardcoded fallback: an unset WEB_SECRET_KEY gets a random per-process key,
+# so tokens stay unforgeable (they just won't survive a restart).
+SECRET_KEY = os.environ.get("WEB_SECRET_KEY") or secrets.token_hex(32)
 ALGORITHM = "HS256"
 TOKEN_EXPIRE_HOURS = 24
 
 _pwd = CryptContext(schemes=["bcrypt"], deprecated="auto")
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/auth/login")
 
-def _web_user() -> str:
-    return os.environ.get("WEB_USER", "admin")
-
 def _web_pass_hash() -> str:
     return os.environ.get("WEB_PASS_HASH", "")
-
-WEB_USER = property(_web_user)
 
 
 def verify_password(plain: str) -> bool:
     h = _web_pass_hash()
     if h:
         return _pwd.verify(plain, h)
-    return plain == os.environ.get("WEB_PASS", "")
+    pw = os.environ.get("WEB_PASS", "")
+    if not pw:
+        # Neither WEB_PASS_HASH nor WEB_PASS configured → deny everything;
+        # the old fallback let "" == "" authenticate with empty credentials.
+        return False
+    return hmac.compare_digest(plain, pw)
 
 
 def create_token(username: str) -> str:

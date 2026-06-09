@@ -1,3 +1,8 @@
+# AMBER warning band: a metric within this fraction of its threshold (e.g.
+# 0.8 → 80–100% of the limit) shows AMBER in the report. RED (breach) is the
+# only state that fires alert emails.
+amber_ratio: 0.8
+
 alerts:
   var_95_pct:
     threshold: 0.05

@@ -178,6 +178,27 @@ def test_rebalance_trims_loss_position():
     assert len(trims) == 1
 
 
+def test_rebalance_no_topup_when_sleeve_in_balance():
+    # One held BUY at 10% with the rest of the book in non-BUY names. Targets
+    # are scaled to the sleeve's current total weight, so the name is already
+    # at target → no order. (Regression: targets normalised over the sleeve
+    # alone made every BUY name look underweight → perpetual top-ups.)
+    results = [{"ticker": "AAA", "robust_signal": "BUY", "ir": 1.0}]
+    positions = {
+        "AAA": {"qty": "100", "market_value": "10000", "unrealized_plpc": "0.0"},
+        "ZZZ": {"qty": "100", "market_value": "90000", "unrealized_plpc": "0.0"},
+    }
+    orders, _ = _rebalance_orders(
+        results, positions, equity=100_000,
+        price_data={"AAA": FakePD(100.0)},
+        risk_weights={"AAA": 0.10, "ZZZ": 0.90}, max_pos_pct=0.15,
+        rebalance_threshold=0.05, cgt_rate=0.33,
+        gates_allow_buys=True, remaining_bp=100_000, dry_run=True,
+        exiting=set(),
+    )
+    assert orders == []
+
+
 def test_cgt_friction_suppresses_trim_on_big_winner():
     # +50% gain: gain_frac = 0.5/1.5 = 0.333; friction = 0.333*0.33 = 0.11;
     # effective threshold = 0.05 + 0.11 = 0.16 > 0.15 drift → NO trim.

@@ -13,14 +13,16 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 5. **Performs Monte Carlo simulation** (DCC-GARCH + Hawkes) over 50,000 paths × 21-day horizon
 6. **Generates Markowitz efficient frontier** with FF5-implied expected returns
 7. **Delivers bilingual (EN/ZH) HTML email reports** with embedded risk-return charts
+8. **Runs an automated paper-trading loop** (RUN_MODE=paper_trade) against an Alpaca paper account: FF5 screening of watchlist + random S&P 500 sample, robust-signal-gated orders, risk gates, stop-losses, and self-maintaining watchlist promotion/pruning
+9. **Serves a FastAPI + Vue dashboard** (`api/` + `web/`) with JWT auth, WebSocket log streaming, and manual run triggers
 
-All trading decisions remain manual. The system provides clean quantitative input.
+All **real-money** trading decisions remain manual. Paper trading is fully automated but uses simulated funds only.
 
 ## Architecture Highlights
 
 ### Pipeline and Run Modes (main.py)
 
-The system operates in **four distinct modes**, selected via RUN_MODE environment variable:
+The system operates in **five distinct modes**, selected via RUN_MODE environment variable:
 
 | Mode | Trigger | Pipeline |
 |---|---|---|
@@ -28,8 +30,9 @@ The system operates in **four distinct modes**, selected via RUN_MODE environmen
 | portfolio | Manual / local | Holdings → prices → portfolio risk only (skip watchlist ranking) |
 | alert_check | 14:00 UTC (pre-market) | Holdings → prices → threshold check only (fire RED alerts) |
 | backtest | Manual | S&P 500 universe → walk-forward validation (FF5 μ vs historical μ) |
+| paper_trade | 22:00 UTC Mon–Fri | Universe expansion → FF5 screen → watchlist promote/prune → risk gates → Alpaca paper orders → state commit + email summary |
 
-Entry point: `python main.py` reads RUN_MODE, config files, and delegates to `run_portfolio_pipeline()` or `run_backtest_pipeline()`.
+Entry point: `python main.py` reads RUN_MODE, config files, and delegates to `run_portfolio_pipeline()`, `run_backtest_pipeline()`, or `strategy.paper_engine.run_paper_trade_pipeline()`.
 
 ### Key Data Flow
 
@@ -84,16 +87,25 @@ Report + Email (notify.report_gen, notify.mailer)
 
 **`data/`** – Holdings & price management:
 - `fetch_holdings.py`: Aggregates IBKR + T212 + eToro; converts all to EUR
-- `price_loader.py`: Loads equity/FX via yfinance; PriceData status flags
+- `price_loader.py`: yfinance batch download (primary) with Massive REST per-ticker fallback (`massive.py`, paced ≤5 req/min); PriceData status flags
 - `cleaner.py`: Validates staleness, gaps, price spikes
 - `cache.py`: Atomic JSON snapshots (holdings + metrics); 7-day retention
-- `spy_universe.py`: S&P 500 scrape (Wikipedia) for backtest
+- `spy_universe.py`: S&P 500 scrape (Wikipedia) for backtest & paper-trade universe
+- `paper_state/`: **Committed** paper-trade state (NAV history, trade log, trailing-stop watermarks) — lives here, NOT in .gitignored `cache/`, so it survives between GitHub Actions runs
 
 **`strategy/`** – Quantitative models:
 - `factor_model.py`: FF5 OLS regression; `run_factor_regression()` → α/β/IR/signal; portfolio exposure; 21-day attribution; robust signal filters; decision trace
 - `ic_analysis.py`: Cross-sectional Information Coefficient; 8 rolling evaluation periods
 - `factor_ortho.py`: Collinearity diagnostics (VIF, condition number, high-corr pairs)
 - `weight_allocator.py`: Signal-weighted allocation; capped 20% per position; portfolio factor exposure warnings
+- `paper_engine.py`: Paper-trading pipeline — universe expansion (watchlist + seeded random S&P 500 fill), FF5 screening, watchlist promotion/pruning, risk gates (max positions, VaR, beta, drawdown halt, VIX), stop-loss + trailing stop, CGT-aware rebalancing, IR-proportional sizing, NAV/trade-log persistence, bilingual email summary
+
+**`brokers/`** – Trading APIs:
+- `alpaca.py`: Alpaca paper-trading REST client (account, positions, market/fractional orders, cancel-all, market clock). `is_market_open()` fails OPEN on clock-API errors
+
+**`api/` + `web/`** – Dashboard:
+- `api/app.py`: FastAPI app — JWT auth (`api/auth.py`; requires `WEB_PASS_HASH` or `WEB_PASS`, denies all logins if neither set), run triggers, price/watchlist/config routes, WebSocket log streaming, background scheduler, Massive WebSocket relay
+- `web/`: Vue 3 + Tailwind frontend (dev server on :5173)
 
 **`risk/`** – Risk quantification:
 - `risk_engine.py`: EWMA VaR, Cornish-Fisher VaR (primary alert), EVT/GPD, CVaR, Sharpe, Beta, HHI, max DD → RAG status
@@ -142,10 +154,20 @@ Report + Email (notify.report_gen, notify.mailer)
 
 **Fallback:** If all broker APIs fail, pipeline uses most recent `cache/` snapshot.
 
+### Paper Trading / Data / Dashboard (Optional)
+
+| Variable | Purpose |
+|---|---|
+| `ALPACA_API_KEY`, `ALPACA_SECRET_KEY` | Alpaca paper account (RUN_MODE=paper_trade) |
+| `PAPER_DRY_RUN` | `true` → screen + log orders, skip execution |
+| `MASSIVE_API_KEY` | Massive REST price fallback when yfinance fails |
+| `WEB_SECRET_KEY` | JWT signing key for dashboard (random per-process if unset → tokens don't survive restart) |
+| `WEB_USER`, `WEB_PASS_HASH` (or `WEB_PASS`) | Dashboard login; **all logins denied if neither password var is set** |
+
 ### YAML Config Files
 
-- **`config/settings.yaml`**: History window (730d), FF5 window (252d), MC paths (50K), model selection
-- **`config/thresholds.yaml`**: Per-metric alert thresholds, severity, bilingual labels
+- **`config/settings.yaml`**: History window (730d), FF5 window (252d), MC paths (50K), model selection, `paper_trade:` block (universe size, risk-gate limits, stop-loss/trailing-stop, rebalance threshold, CGT rate, VIX halt, earnings-avoid window)
+- **`config/thresholds.yaml`**: Per-metric alert thresholds, severity, bilingual labels; `amber_ratio` (default 0.8) — metric within 80–100% of its threshold shows AMBER in reports; only RED (actual breach) fires alert emails
 - **`config/volatility.yaml`**: EWMA λ (0.94), GARCH params, ECB rate (3.5%), window sizes
 - **`config/watchlist.csv`**: Tickers (equity/bond/gold), asset_class, currency — edit and commit; takes effect on next run
 
@@ -175,11 +197,19 @@ RUN_MODE=alert_check python main.py
 # 6. Walk-forward backtest
 RUN_MODE=backtest python main.py
 
-# 7. Local scheduler (full at 21:30 UTC, alerts every 4h)
+# 7. Paper trading (set PAPER_DRY_RUN=true to screen without placing orders)
+RUN_MODE=paper_trade python main.py
+
+# 8. Local scheduler (full at 21:30 UTC, alerts every 4h)
 python scheduler.py
 
-# 8. Syntax check + smoke tests (same as CI)
-python test_pipeline.py
+# 9. Dashboard (FastAPI backend + Vue frontend)
+uvicorn api.app:app --reload        # backend on :8000
+cd web && npm run dev               # frontend on :5173
+
+# 10. Tests (same as CI)
+pytest tests/             # unit tests: risk math + paper engine
+python test_pipeline.py   # import + smoke test
 ```
 
 ## GitHub Actions Workflows
@@ -190,9 +220,15 @@ python test_pipeline.py
 - Restores `cache/` (alert dedup, FF5 pickle, SPY universe)
 - Installs optional deps (vectorbt, duckdb) and CJK fonts for matplotlib
 
+**`.github/workflows/paper_trade.yml`**
+- Cron: 22:00 UTC Mon–Fri (30 min after daily_run full mode)
+- Manual dispatch with optional dry-run flag
+- Commits paper-trade state back to the repo (watchlist promotions/prunes + `data/paper_state/`) with `[skip ci]`
+
 **`.github/workflows/ci.yml`**
 - Runs on push/PR to main or master
 - Syntax check: all .py files (py_compile)
+- Unit tests: `pytest tests/` (risk math + paper engine)
 - Smoke test: imports + factor model + attribution + report sections + decision trace
 
 ## Key Design Patterns & Constraints
@@ -303,6 +339,8 @@ Smoke test: imports all modules, runs factor model + attribution + report genera
 - **matplotlib fonts:** Must install `fonts-wqy-microhei` on CI for CJK axis labels. Windows may need manual font install.
 - **Margin calculations:** IBKR RegT 25% breach flag only; system does **not auto-liquidate**. Manual action required.
 - **CGT calculation:** Irish 33% applies to realized gains >€1,270. Monte Carlo applies this on synthetic paths; actual trades require manual calculation.
+- **Paper-trade state:** `data/paper_state/` and `config/watchlist.csv` are committed by the paper_trade workflow after each run — pull before editing locally to avoid push conflicts. On a rebase conflict the workflow currently drops that day's state commit silently.
+- **Dashboard auth:** logins are denied unless `WEB_PASS_HASH` (preferred) or `WEB_PASS` is set; if `WEB_SECRET_KEY` is unset the JWT key is random per-process, so tokens invalidate on every restart.
 
 ## Performance & Limits
 

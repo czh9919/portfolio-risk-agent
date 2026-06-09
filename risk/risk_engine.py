@@ -525,12 +525,24 @@ def compute_all(holdings: list[dict], price_data: dict,
         },
     }
 
-    # RAG status
+    # RAG status: RED = breach, AMBER = inside the warning band (within
+    # amber_ratio of the threshold), GREEN = comfortably clear, GREY = no data.
+    amber_ratio = float((thresholds or {}).get("amber_ratio", 0.8))
+
     def rag(value, threshold, direction="above"):
         if value is None or value != value:  # nan
             return "GREY"
-        breach = value > threshold if direction == "above" else value < threshold
-        return "RED" if breach else "GREEN"
+        if direction == "above":
+            if value > threshold:
+                return "RED"
+            if value > threshold * amber_ratio:
+                return "AMBER"
+        else:
+            if value < threshold:
+                return "RED"
+            if value < threshold / amber_ratio:
+                return "AMBER"
+        return "GREEN"
 
     alerts = {}
     if thresholds:

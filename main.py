@@ -87,7 +87,6 @@ def run_portfolio_pipeline(run_mode: str = "full", config: dict = None, on_log=N
             logger.error("No holdings and no cache — skipping portfolio pipeline")
             return
 
-    equity_tickers = list({h["ticker"] for h in holdings if h.get("asset_class", "equity") == "equity"})
     # Load ALL holding tickers (incl. bonds/gold) so 1-day risk metrics, the
     # optimizer and stress price the whole portfolio — not just the equity sleeve.
     all_tickers    = list({h["ticker"] for h in holdings})

@@ -62,6 +62,77 @@ def _t_color(t_val) -> str:
     return "#bbb"
 
 
+_EXEC_VERDICT = {
+    "REDUCE":     ("exec_v_reduce",     "#c0392b"),
+    "OBSERVE":    ("exec_v_observe",    "#95a5a6"),
+    "ACCUMULATE": ("exec_v_accumulate", "#27ae60"),
+    "WAIT":       ("exec_v_wait",       "#95a5a6"),
+}
+
+
+def _exec_card(e: dict, t: dict) -> str:
+    """One compact execution-plan card for a single ticker."""
+    v_key, v_col = _EXEC_VERDICT.get(e.get("verdict", "WAIT"), ("exec_v_wait", "#95a5a6"))
+    badge = (f"<span style='background:{v_col};color:#fff;padding:2px 8px;"
+             f"border-radius:10px;font-size:11px;font-weight:700'>{t[v_key]}</span>")
+
+    prem = e.get("premium_pct")
+    prem_str = ""
+    if prem is not None:
+        pcol = "#c0392b" if prem >= 0 else "#27ae60"
+        prem_str = (f"<span style='color:{pcol};font-size:11px'>"
+                    f"{t['exec_anchor']} {prem:+.1f}%</span>")
+
+    # Ladder rungs as inline chips (HVN-snapped rungs marked)
+    rung_html = ""
+    for r in e.get("ladder", []):
+        hvn_tag = (f"<sup style='color:#2980b9;font-size:8px'>{t['exec_hvn_tag']}</sup>"
+                   if r.get("at_hvn") else "")
+        rung_html += (
+            f"<span style='display:inline-block;background:#f4f6fb;border:1px solid #e3e8f2;"
+            f"border-radius:6px;padding:2px 7px;margin:2px 3px 2px 0;font-size:11px;color:#2c3e50'>"
+            f"{r['price']:.2f}{hvn_tag} "
+            f"<span style='color:#aaa'>({r['dist_pct']:+.1f}%)</span></span>"
+        )
+    if not rung_html:
+        rung_html = "<span style='font-size:11px;color:#bbb'>—</span>"
+
+    # ADV cap + days-to-exit
+    cap_bits = []
+    if e.get("max_shares_day"):
+        cap_bits.append(f"{t['exec_adv_cap']} {e['max_shares_day']:,}/d "
+                        f"({e.get('participation_pct', 0)*100:.0f}% ADV)")
+    if e.get("days_to_exit") is not None:
+        cap_bits.append(t['exec_days'].format(d=e['days_to_exit']))
+    cap_str = " · ".join(cap_bits)
+
+    # OPEX option levels
+    opts = e.get("options") or {}
+    opex_bits = []
+    if opts.get("max_pain") is not None:
+        opex_bits.append(f"{t['exec_maxpain']} {opts['max_pain']:.0f}")
+    if opts.get("peak_gamma") is not None:
+        opex_bits.append(f"{t['exec_gamma']} {opts['peak_gamma']:.0f}")
+    opex_str = ""
+    if opex_bits:
+        opex_str = (f"<span style='color:#888'>{t['exec_opex']} {opts.get('expiry','')}: "
+                    f"{' · '.join(opex_bits)}</span>")
+
+    footer = " &nbsp;·&nbsp; ".join(x for x in (cap_str, opex_str) if x)
+    footer_html = (f"<div style='font-size:11px;color:#888;margin-top:4px'>{footer}</div>"
+                   if footer else "")
+
+    return f"""
+<div style="border:1px solid #eee;border-radius:8px;padding:8px 10px;margin:0 0 8px;background:#fff">
+  <div style="font-size:13px;color:#2c3e50">
+    <b>{e['ticker']}</b> &nbsp; {badge} &nbsp;
+    <span style="color:#888">@ {e.get('price', '—')}</span> &nbsp; {prem_str}
+  </div>
+  <div style="margin-top:5px">{t['exec_ladder']}: {rung_html}</div>
+  {footer_html}
+</div>"""
+
+
 def build_report(metrics: dict, stress: dict, holdings: list[dict],
                  price_data: dict, last_week: Optional[dict] = None,
                  lang: str = "both",
@@ -76,20 +147,23 @@ def build_report(metrics: dict, stress: dict, holdings: list[dict],
                  attribution: Optional[dict] = None,
                  collinearity: Optional[dict] = None,
                  ic_result: Optional[dict] = None,
-                 signal_weights: Optional[list] = None) -> tuple[str, str]:
+                 signal_weights: Optional[list] = None,
+                 execution: Optional[list] = None) -> tuple[str, str]:
     """Returns (html_en, html_zh)."""
     en = _build(metrics, stress, holdings, price_data, last_week, "en",
                 frontier, suggestions, has_chart=has_chart_en,
                 div_candidates=div_candidates, fx_rates=fx_rates,
                 stock_factors=stock_factors, port_exposure=port_exposure,
                 attribution=attribution, collinearity=collinearity,
-                ic_result=ic_result, signal_weights=signal_weights)
+                ic_result=ic_result, signal_weights=signal_weights,
+                execution=execution)
     zh = _build(metrics, stress, holdings, price_data, last_week, "zh",
                 frontier, suggestions, has_chart=has_chart_zh,
                 div_candidates=div_candidates, fx_rates=fx_rates,
                 stock_factors=stock_factors, port_exposure=port_exposure,
                 attribution=attribution, collinearity=collinearity,
-                ic_result=ic_result, signal_weights=signal_weights)
+                ic_result=ic_result, signal_weights=signal_weights,
+                execution=execution)
     return en, zh
 
 
@@ -97,7 +171,8 @@ def _build(metrics, stress, holdings, price_data, last_week, lang,
            frontier=None, suggestions=None, has_chart=False,
            div_candidates=None, fx_rates=None,
            stock_factors=None, port_exposure=None, attribution=None,
-           collinearity=None, ic_result=None, signal_weights=None):
+           collinearity=None, ic_result=None, signal_weights=None,
+           execution=None):
     t        = _T[lang]
     rag      = metrics.get("overall_rag", "GREY")
     rag_col  = _RAG_COLOR[rag]
@@ -783,6 +858,32 @@ def _build(metrics, stress, holdings, price_data, last_week, lang,
   {exp_warn_html}
 </div>""")
 
+    # ── Execution / laddering plan ─────────────────────────────────────────────
+    if execution:
+        held_plans  = [e for e in execution if e.get("side") == "exit"]
+        watch_plans = [e for e in execution if e.get("side") == "entry"]
+        groups = []
+        if held_plans:
+            groups.append((t['exec_held'], held_plans))
+        if watch_plans:
+            groups.append((t['exec_watch'], watch_plans))
+
+        group_html = ""
+        for grp_label, plans in groups:
+            group_html += (f"<p style='font-size:12px;font-weight:700;color:#555;"
+                           f"margin:10px 0 4px'>{grp_label}</p>")
+            for e in plans:
+                group_html += _exec_card(e, t)
+
+        sections.append(f"""
+<div style="padding:0 20px 16px">
+  <h2 style="font-size:14px;color:#444;margin:0 0 10px;border-bottom:1px solid #eee;padding-bottom:6px">
+    {t['exec_title']}
+  </h2>
+  <p style="font-size:11px;color:#aaa;margin:0 0 8px">{t['exec_note']}</p>
+  {group_html}
+</div>""")
+
     # ── Rebalancing suggestions ────────────────────────────────────────────────
     if suggestions:
         sug_rows = ""
@@ -1232,6 +1333,23 @@ _T = {
         "sw_consist":          "Consistency",
         "sw_port_exp":         "Portfolio factor exposure",
         "sw_exp_warn":         "Exposure warning: {factors} exceed threshold",
+        "exec_title":          "Execution Plan — Laddered Entry / Exit",
+        "exec_note":           "Trade execution only — the BUY/SELL decision comes from the factor model. Rungs are limit levels spaced by ATR and snapped to high-volume nodes (HVN). The ADV cap is the hard constraint: never trade more than this share of daily volume.",
+        "exec_held":           "Holdings (exit ladder)",
+        "exec_watch":          "Watchlist BUY (entry ladder)",
+        "exec_verdict":        "Action",
+        "exec_anchor":         "vs anchored VWAP",
+        "exec_ladder":         "Ladder",
+        "exec_adv_cap":        "ADV cap",
+        "exec_days":           "≈{d}d to exit",
+        "exec_opex":           "OPEX",
+        "exec_maxpain":        "max-pain",
+        "exec_gamma":          "γ-peak",
+        "exec_hvn_tag":        "HVN",
+        "exec_v_reduce":       "REDUCE",
+        "exec_v_observe":      "OBSERVE",
+        "exec_v_accumulate":   "ACCUMULATE",
+        "exec_v_wait":         "WAIT",
         "footer_note":    "For informational purposes only. Not investment advice.",
         "alert_labels": {
             "var_95":    "VaR (95%) > 5% NAV",
@@ -1346,6 +1464,23 @@ _T = {
         "sw_consist":          "一致性",
         "sw_port_exp":         "组合因子敞口",
         "sw_exp_warn":         "敞口警告：{factors} 超过阈值",
+        "exec_title":          "执行计划 — 分批建仓 / 减仓阶梯",
+        "exec_note":           "仅为交易执行方案，买卖决策由因子模型给出。阶梯档位为限价单，按 ATR 间距排列并贴近高成交量区（HVN）。ADV 上限为硬约束：单日成交量占比不得超过此比例。",
+        "exec_held":           "持仓（减仓阶梯）",
+        "exec_watch":          "观察名单买入（建仓阶梯）",
+        "exec_verdict":        "操作",
+        "exec_anchor":         "相对锚定VWAP",
+        "exec_ladder":         "阶梯",
+        "exec_adv_cap":        "ADV上限",
+        "exec_days":           "≈{d}天退出",
+        "exec_opex":           "期权到期",
+        "exec_maxpain":        "最大痛点",
+        "exec_gamma":          "γ峰值",
+        "exec_hvn_tag":        "HVN",
+        "exec_v_reduce":       "减仓",
+        "exec_v_observe":      "观望",
+        "exec_v_accumulate":   "建仓",
+        "exec_v_wait":         "等待",
         "footer_note":    "本报告仅供参考，不构成投资建议。",
         "alert_labels": {
             "var_95":    "VaR(95%) > 组合市值5%",

@@ -1132,6 +1132,23 @@ def generate_orders(
 
     earnings_avoid_days = int((paper_cfg or {}).get("earnings_avoid_days", 0))
 
+    # ADV participation cap: a single day's BUY must not exceed participation_pct
+    # of the name's average daily share volume, regardless of conviction sizing.
+    participation_pct = float((paper_cfg or {}).get("participation_pct", 0) or 0)
+    adv_cap_shares: dict = {}
+    if participation_pct > 0:
+        try:
+            from data.price_loader import load_ohlcv
+            from strategy.execution import participation_cap_shares
+            adv_window = int((paper_cfg or {}).get("adv_window", 20))
+            ohlcv = load_ohlcv([r["ticker"] for r in new_buys], days=max(adv_window * 3, 60))
+            for tk, df in ohlcv.items():
+                cap = participation_cap_shares(df, adv_window, participation_pct)
+                if cap:
+                    adv_cap_shares[tk] = cap
+        except Exception as e:
+            logger.warning(f"Paper: ADV participation cap unavailable — {e}")
+
     # Use IR as conviction weight; floor at 0.01 so tickers missing IR still get a slice
     irs     = np.array([max(float(r.get("ir") or 0), 0.01) for r in new_buys])
     raw_w   = irs / irs.sum()                       # proportional weights
@@ -1161,6 +1178,19 @@ def generate_orders(
         qty = round(target_val / price, 6)
         if qty < 0.001:
             continue
+
+        # Hard liquidity constraint: never exceed participation_pct of ADV/day
+        cap = adv_cap_shares.get(ticker)
+        capped = False
+        if cap is not None and qty > cap:
+            logger.info(
+                f"Paper: {ticker} BUY capped {qty:.4f} → {cap:.4f} shares "
+                f"({participation_pct*100:.0f}% ADV liquidity limit)"
+            )
+            qty = round(cap, 6)
+            capped = True
+            if qty < 0.001:
+                continue
         remaining_bp -= qty * price
 
         orders.append({
@@ -1174,6 +1204,7 @@ def generate_orders(
                 f"BUY signal  t={r.get('t_alpha', 0) or 0:.1f}"
                 f"  IR={r.get('ir', 0) or 0:.2f}"
                 f"  alloc={w*100:.1f}%"
+                + ("  [ADV-capped]" if capped else "")
             ),
         })
         if not dry_run:

@@ -291,6 +291,57 @@ def run_portfolio_pipeline(run_mode: str = "full", config: dict = None, on_log=N
         div_candidates.sort(key=lambda x: x["delta_sharpe"], reverse=True)
         logger.info(f"Diversification candidates: {len(div_candidates)} computed")
 
+    # ── Execution / exit-laddering plan (held + watchlist BUY candidates) ─────
+    execution: list[dict] = []
+    try:
+        from data.price_loader import load_ohlcv
+        from strategy.execution import analyze_execution
+
+        exec_cfg   = (config or {}).get("execution", {})
+        ohlcv_days = int(exec_cfg.get("ohlcv_days", 180))
+
+        held = {h["ticker"]: h for h in holdings if h.get("asset_class", "equity") == "equity"}
+        buy_watch = [
+            s["ticker"] for s in (stock_factors or [])
+            if (s.get("robust_signal") or s.get("signal")) == "BUY"
+            and s["ticker"] not in held
+        ]
+        exec_tickers = list(held.keys()) + buy_watch
+        ohlcv = load_ohlcv(exec_tickers, days=ohlcv_days) if exec_tickers else {}
+
+        for tk, h in held.items():
+            df = ohlcv.get(tk)
+            if df is None:
+                continue
+            qty  = float(h.get("quantity") or 0)
+            rate = fx_rates.get(f"{h.get('currency','USD')}EUR", 1.0)
+            avg_cost_native = (float(h["cost_basis_eur"]) / qty / rate) if qty and rate else None
+            entry_dt = None
+            ed = h.get("entry_date")
+            if ed:
+                try:
+                    entry_dt = date.fromisoformat(str(ed)[:10])
+                except ValueError:
+                    entry_dt = None
+            plan = analyze_execution(tk, df, side="exit", position_shares=qty,
+                                     avg_cost_native=avg_cost_native,
+                                     entry_date=entry_dt, cfg=exec_cfg)
+            if plan:
+                execution.append(plan)
+
+        for tk in buy_watch:
+            df = ohlcv.get(tk)
+            if df is None:
+                continue
+            plan = analyze_execution(tk, df, side="entry", cfg=exec_cfg)
+            if plan:
+                execution.append(plan)
+
+        logger.info(f"Execution plans: {len(execution)} "
+                    f"({len(held)} held, {len(buy_watch)} watchlist BUY)")
+    except Exception as e:
+        logger.warning(f"Execution analysis skipped — {e}")
+
     html_en, html_zh = build_report(
         metrics, stress, holdings, price_data, last_week=last_week,
         frontier=frontier, suggestions=suggestions,
@@ -302,6 +353,7 @@ def run_portfolio_pipeline(run_mode: str = "full", config: dict = None, on_log=N
         collinearity=collinearity,
         ic_result=ic_result,
         signal_weights=signal_weights if signal_weights else None,
+        execution=execution if execution else None,
     )
     mailer.send_report(html_en, html_zh, rag=metrics["overall_rag"],
                        chart_en=chart_en, chart_zh=chart_zh)

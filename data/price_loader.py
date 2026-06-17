@@ -167,6 +167,60 @@ def _classify(ticker: str, closes: Optional[pd.Series], target_days: int) -> Pri
                          days=len(closes_), status="ok")
 
 
+# ── OHLCV (full bars for execution analysis) ───────────────────────────────────
+
+def load_ohlcv(tickers: list[str], days: int = 252) -> dict[str, pd.DataFrame]:
+    """
+    Batch-fetch full OHLCV bars (Open/High/Low/Close/Volume) via yfinance.
+
+    Separate from load_prices(): the execution-analysis layer needs High/Low
+    (for ATR) and Volume (for VWAP, HVN, ADV), which the close-only PriceData
+    path discards. Returns {ticker: DataFrame} for every ticker that resolved;
+    tickers yfinance can't serve are simply absent from the dict.
+    """
+    if not tickers:
+        return {}
+
+    end   = datetime.now()
+    start = end - timedelta(days=int(days * 1.5))
+    cols  = ["Open", "High", "Low", "Close", "Volume"]
+    out: dict[str, pd.DataFrame] = {}
+
+    try:
+        raw = yf.download(
+            tickers, start=start, end=end,
+            auto_adjust=True, progress=False, threads=True, group_by="ticker",
+        )
+    except Exception as exc:
+        logger.error(f"load_ohlcv: yfinance batch failed: {exc}")
+        return out
+
+    if raw is None or raw.empty:
+        logger.warning("load_ohlcv: empty response")
+        return out
+
+    multi = isinstance(raw.columns, pd.MultiIndex)
+    for ticker in tickers:
+        try:
+            if multi:
+                if ticker not in raw.columns.get_level_values(0):
+                    continue
+                df = raw[ticker]
+            else:
+                df = raw  # single ticker → flat columns
+            df = df[[c for c in cols if c in df.columns]].dropna(how="all")
+            if df.empty or "Close" not in df.columns:
+                continue
+            if df.index.tz is not None:
+                df.index = df.index.tz_localize(None)
+            out[ticker] = df.tail(days)
+        except Exception as exc:
+            logger.debug(f"load_ohlcv {ticker}: {exc}")
+
+    logger.info(f"load_ohlcv: {len(out)}/{len(tickers)} tickers with OHLCV bars")
+    return out
+
+
 # ── FX rates ──────────────────────────────────────────────────────────────────
 
 def load_fx_rates() -> dict[str, float]:

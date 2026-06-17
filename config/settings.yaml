@@ -42,9 +42,25 @@ factor_model:
   window_days: 252        # OLS regression window; falls back to available days if fewer
   min_window_days: 63     # skip ticker if aligned days < this
 
+execution:
+  # Trade-execution / laddering plan per stock (held + watchlist). Decision still
+  # comes from the FF5 model; this only governs price, size, and pace of fills.
+  atr_period:        14     # ATR lookback (Wilder)
+  n_rungs:           5      # ladder rungs (4–6)
+  rung_spacing_atr:  0.5    # rung spacing as a multiple of ATR
+  hvn_bins:          24     # price buckets for the volume profile
+  hvn_lookback:      120    # trading days of volume-profile history
+  hvn_top:           4      # number of high-volume nodes to keep
+  hvn_snap_atr:      0.5    # snap a rung to an HVN within this × ATR
+  adv_window:        20     # trading days for average daily volume
+  participation_pct: 0.08   # ≤8% of ADV per day (hard liquidity cap; 5–10% band)
+  options_enabled:   true   # attempt Max Pain / peak-gamma for every ticker
+  ohlcv_days:        180    # OHLCV history window pulled for this analysis
+
 paper_trade:
   universe_size: 50        # total tickers screened (watchlist + random S&P 500 fill)
   max_position_pct: 0.15   # hard cap: max equity fraction per single position
+  participation_pct: 0.08  # cap a single day's BUY at this fraction of the name's ADV
   # ── Risk gates (checked before opening any new position) ──────────────────
   max_positions: 10        # halt new buys once this many open positions exist
   var_limit_pct: 0.05      # halt new buys if portfolio 1-day EWMA VaR_95 > 5%

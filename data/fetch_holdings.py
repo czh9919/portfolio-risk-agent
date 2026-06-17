@@ -137,6 +137,9 @@ def fetch_ibkr(fx_rates: dict) -> list[dict]:
                 "maturity":          maturity,
                 "coupon":            coupon,
                 "platform":          "IBKR",
+                # openDateTime is present only when the Flex Query includes the
+                # "Open Date/Time" field; the ledger backfills it otherwise.
+                "entry_date":        pos.get("openDateTime") or pos.get("holdingPeriodDateTime", ""),
                 "quantity":          position,
                 "cost_basis_eur":    cost * rate,
                 "market_value_eur":  mkt_val * rate,
@@ -181,7 +184,6 @@ def fetch_t212(fx_rates: dict) -> list[dict]:
     holdings = []
     try:
         for pos in r.json():
-            currency = pos.get("initialFillDate", "")  # T212 beta returns GBP natively
             mv    = float(pos.get("currentPrice", 0)) * float(pos.get("quantity", 0))
             cost  = float(pos.get("averagePrice", 0)) * float(pos.get("quantity", 0))
             holdings.append({
@@ -189,6 +191,7 @@ def fetch_t212(fx_rates: dict) -> list[dict]:
                 "description":       _t212_ticker(pos.get("ticker", "")),
                 "asset_class":       "equity",
                 "platform":          "T212",
+                "entry_date":        pos.get("initialFillDate", ""),
                 "quantity":          float(pos.get("quantity", 0)),
                 "cost_basis_eur":    cost,
                 "market_value_eur":  mv,
@@ -284,6 +287,7 @@ def _load_etoro_csv(fx_rates: dict = None) -> list[dict]:
             "description":       row.get("description", ticker).strip(),
             "asset_class":       row.get("asset_class", "equity").strip(),
             "platform":          "eToro",
+            "entry_date":        (row.get("entry_date") or "").strip(),
             "quantity":          qty,
             "cost_basis_eur":    cost_eur,
             "market_value_eur":  mv_eur,
@@ -320,6 +324,7 @@ def fetch_etoro(fx_rates: dict) -> list[dict]:
                 "description":       raw_sym,
                 "asset_class":       "equity",
                 "platform":          "eToro",
+                "entry_date":        pos.get("OpenDateTime", ""),
                 "quantity":          float(pos.get("Units", 0)),
                 "cost_basis_eur":    cost,
                 "market_value_eur":  mv,
@@ -354,6 +359,13 @@ def fetch_all_holdings(fx_rates: dict) -> list[dict]:
             # Only update description when it echoes the old ticker (broker-provided name)
             if h.get("description") == old:
                 h["description"] = new
+
+    # Record / backfill entry dates (broker open date wins; else first-seen)
+    try:
+        from data import entry_dates
+        entry_dates.enrich(holdings)
+    except Exception as e:
+        logger.warning(f"entry-date enrichment skipped: {e}")
 
     total_nav = sum(h["market_value_eur"] for h in holdings)
     for h in holdings:

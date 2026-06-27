@@ -26,13 +26,13 @@ def fetch_ff5() -> Optional[pd.DataFrame]:
     if _FF5_CACHE.exists() and (time.time() - _FF5_CACHE.stat().st_mtime) < 72000:
         try:
             with open(_FF5_CACHE, "rb") as f:
-                return pickle.load(f)
+                return _normalize_ff5_index(pickle.load(f))
         except Exception:
             pass
     try:
         import pandas_datareader.data as web
         raw = web.DataReader("F-F_Research_Data_5_Factors_2x3_daily", "famafrench")[0]
-        ff5 = raw / 100.0          # percent → decimal
+        ff5 = _normalize_ff5_index(raw / 100.0)   # percent → decimal
         _FF5_CACHE.parent.mkdir(parents=True, exist_ok=True)
         with open(_FF5_CACHE, "wb") as fh:
             pickle.dump(ff5, fh)
@@ -42,6 +42,23 @@ def fetch_ff5() -> Optional[pd.DataFrame]:
     except Exception as exc:
         logger.warning(f"FF5 fetch failed: {exc} — will fall back to historical mean")
         return None
+
+
+def _normalize_ff5_index(df: pd.DataFrame) -> pd.DataFrame:
+    """Coerce FF5 to a tz-naive DatetimeIndex.
+
+    pandas_datareader returns a PeriodIndex for daily Fama-French data, which
+    has no .tz attribute and so blows up every downstream `_tz_naive` helper
+    that expects a DatetimeIndex. Normalize once at the source.
+    """
+    if df is None:
+        return df
+    idx = df.index
+    if isinstance(idx, pd.PeriodIndex):
+        df = df.set_axis(idx.to_timestamp())
+    elif isinstance(idx, pd.DatetimeIndex) and idx.tz is not None:
+        df = df.set_axis(idx.tz_localize(None))
+    return df
 
 
 def ff_implied_mu(ret_df: pd.DataFrame, rf: float = 0.035) -> np.ndarray:
@@ -62,11 +79,16 @@ def ff_implied_mu(ret_df: pd.DataFrame, rf: float = 0.035) -> np.ndarray:
     if ff5 is None:
         return ret_df.mean().values * 252
 
-    # yfinance returns tz-aware DatetimeIndex; FF5 from pandas_datareader is tz-naive.
-    # Strip timezone from both before joining to avoid TypeError.
+    # Normalize indexes for the join:
+    #   • yfinance returns a tz-aware DatetimeIndex
+    #   • pandas_datareader's FF5 returns a PeriodIndex (no .tz attribute)
+    # Coerce both to a tz-naive DatetimeIndex before joining.
     def _tz_naive(df: pd.DataFrame) -> pd.DataFrame:
-        if df.index.tz is not None:
-            return df.set_axis(df.index.tz_localize(None))
+        idx = df.index
+        if isinstance(idx, pd.PeriodIndex):
+            return df.set_axis(idx.to_timestamp())
+        if isinstance(idx, pd.DatetimeIndex) and idx.tz is not None:
+            return df.set_axis(idx.tz_localize(None))
         return df
 
     aligned = _tz_naive(ret_df).join(

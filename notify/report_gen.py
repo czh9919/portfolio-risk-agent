@@ -70,8 +70,31 @@ _EXEC_VERDICT = {
 }
 
 
+def _ladder_chips(rungs: list, t: dict, chip_bg: str, chip_border: str,
+                  txt_col: str) -> str:
+    """Render one ladder's rungs as inline price/size chips."""
+    if not rungs:
+        return "<span style='font-size:11px;color:#bbb'>—</span>"
+    out = ""
+    for r in rungs:
+        hvn_tag = (f"<sup style='color:#2980b9;font-size:8px'>{t['exec_hvn_tag']}</sup>"
+                   if r.get("at_hvn") else "")
+        sh = r.get("shares")
+        sh_str = (f" <span style='color:#555'>×{sh:,}</span>"
+                  if sh else "")
+        cap_flag = ("<sup style='color:#c0392b;font-size:8px'>!</sup>"
+                    if r.get("over_cap") else "")
+        out += (
+            f"<span style='display:inline-block;background:{chip_bg};border:1px solid {chip_border};"
+            f"border-radius:6px;padding:2px 7px;margin:2px 3px 2px 0;font-size:11px;color:{txt_col}'>"
+            f"{r['price']:.2f}{hvn_tag}{sh_str}{cap_flag} "
+            f"<span style='color:#aaa'>({r['dist_pct']:+.1f}%)</span></span>"
+        )
+    return out
+
+
 def _exec_card(e: dict, t: dict) -> str:
-    """One compact execution-plan card for a single ticker."""
+    """One execution-plan card: ascending (减仓) + descending (建仓) ladders."""
     v_key, v_col = _EXEC_VERDICT.get(e.get("verdict", "WAIT"), ("exec_v_wait", "#95a5a6"))
     badge = (f"<span style='background:{v_col};color:#fff;padding:2px 8px;"
              f"border-radius:10px;font-size:11px;font-weight:700'>{t[v_key]}</span>")
@@ -83,19 +106,13 @@ def _exec_card(e: dict, t: dict) -> str:
         prem_str = (f"<span style='color:{pcol};font-size:11px'>"
                     f"{t['exec_anchor']} {prem:+.1f}%</span>")
 
-    # Ladder rungs as inline chips (HVN-snapped rungs marked)
-    rung_html = ""
-    for r in e.get("ladder", []):
-        hvn_tag = (f"<sup style='color:#2980b9;font-size:8px'>{t['exec_hvn_tag']}</sup>"
-                   if r.get("at_hvn") else "")
-        rung_html += (
-            f"<span style='display:inline-block;background:#f4f6fb;border:1px solid #e3e8f2;"
-            f"border-radius:6px;padding:2px 7px;margin:2px 3px 2px 0;font-size:11px;color:#2c3e50'>"
-            f"{r['price']:.2f}{hvn_tag} "
-            f"<span style='color:#aaa'>({r['dist_pct']:+.1f}%)</span></span>"
-        )
-    if not rung_html:
-        rung_html = "<span style='font-size:11px;color:#bbb'>—</span>"
+    primary = e.get("primary", "up")
+    star = "<span style='color:#e67e22'>&#9733;</span> "  # ★ marks the primary intent
+    up_label = (star if primary == "up" else "") + t['exec_ladder_up']
+    down_label = (star if primary == "down" else "") + t['exec_ladder_down']
+
+    up_html = _ladder_chips(e.get("ladder_up", []), t, "#fdf3f2", "#f3d6d2", "#c0392b")
+    down_html = _ladder_chips(e.get("ladder_down", []), t, "#eef9f1", "#cdeed6", "#1e8449")
 
     # ADV cap + days-to-exit
     cap_bits = []
@@ -128,7 +145,8 @@ def _exec_card(e: dict, t: dict) -> str:
     <b>{e['ticker']}</b> &nbsp; {badge} &nbsp;
     <span style="color:#888">@ {e.get('price', '—')}</span> &nbsp; {prem_str}
   </div>
-  <div style="margin-top:5px">{t['exec_ladder']}: {rung_html}</div>
+  <div style="margin-top:5px"><span style="font-size:11px;color:#c0392b;font-weight:700">{up_label}</span>: {up_html}</div>
+  <div style="margin-top:3px"><span style="font-size:11px;color:#1e8449;font-weight:700">{down_label}</span>: {down_html}</div>
   {footer_html}
 </div>"""
 
@@ -1334,12 +1352,14 @@ _T = {
         "sw_port_exp":         "Portfolio factor exposure",
         "sw_exp_warn":         "Exposure warning: {factors} exceed threshold",
         "exec_title":          "Execution Plan — Laddered Entry / Exit",
-        "exec_note":           "Trade execution only — the BUY/SELL decision comes from the factor model. Rungs are limit levels spaced by ATR and snapped to high-volume nodes (HVN). The ADV cap is the hard constraint: never trade more than this share of daily volume.",
-        "exec_held":           "Holdings (exit ladder)",
-        "exec_watch":          "Watchlist BUY (entry ladder)",
+        "exec_note":           "Trade execution only — the BUY/SELL decision comes from the factor model. Every name gets both a sell ladder (above price) and a buy ladder (below price); ★ marks the primary intent. Rungs are limit levels spaced by ATR, snapped to high-volume nodes (HVN), and sized by liquidity (×shares). The ADV cap is the hard constraint: ! flags a rung above the daily cap.",
+        "exec_held":           "Holdings (primary: sell ladder)",
+        "exec_watch":          "Watchlist BUY (primary: buy ladder)",
         "exec_verdict":        "Action",
         "exec_anchor":         "vs anchored VWAP",
         "exec_ladder":         "Ladder",
+        "exec_ladder_up":      "↑ Sell ladder (scale-out)",
+        "exec_ladder_down":    "↓ Buy ladder (scale-in)",
         "exec_adv_cap":        "ADV cap",
         "exec_days":           "≈{d}d to exit",
         "exec_opex":           "OPEX",
@@ -1465,12 +1485,14 @@ _T = {
         "sw_port_exp":         "组合因子敞口",
         "sw_exp_warn":         "敞口警告：{factors} 超过阈值",
         "exec_title":          "执行计划 — 分批建仓 / 减仓阶梯",
-        "exec_note":           "仅为交易执行方案，买卖决策由因子模型给出。阶梯档位为限价单，按 ATR 间距排列并贴近高成交量区（HVN）。ADV 上限为硬约束：单日成交量占比不得超过此比例。",
-        "exec_held":           "持仓（减仓阶梯）",
-        "exec_watch":          "观察名单买入（建仓阶梯）",
+        "exec_note":           "仅为交易执行方案，买卖决策由因子模型给出。每只标的同时给出上升减仓阶梯（价上方）与下降建仓阶梯（价下方）；★ 为主要方向。阶梯档位为限价单，按 ATR 间距排列、贴近高成交量区（HVN），并按流动性分配股数（×股数）。ADV 上限为硬约束：! 表示该档位超过单日上限。",
+        "exec_held":           "持仓（主：减仓阶梯）",
+        "exec_watch":          "观察名单买入（主：建仓阶梯）",
         "exec_verdict":        "操作",
         "exec_anchor":         "相对锚定VWAP",
         "exec_ladder":         "阶梯",
+        "exec_ladder_up":      "↑ 减仓阶梯（分批卖出）",
+        "exec_ladder_down":    "↓ 建仓阶梯（分批买入）",
         "exec_adv_cap":        "ADV上限",
         "exec_days":           "≈{d}天退出",
         "exec_opex":           "期权到期",

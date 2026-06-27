@@ -193,6 +193,40 @@ def test_analyze_execution_exit_no_options():
     assert plan["days_to_exit"] == pytest.approx(5.0, abs=0.2)
 
 
+def test_analyze_execution_builds_both_ladders():
+    df = _ohlcv(n=160, start=100.0, step=0.25, vol=1_000_000)
+    cfg = {"options_enabled": False}
+    plan = analyze_execution("FAKE", df, side="exit",
+                             position_shares=400_000, cfg=cfg)
+    assert plan["primary"] == "up"
+    up, down = plan["ladder_up"], plan["ladder_down"]
+    assert up and down
+    price = plan["price"]
+    assert all(r["price"] > price for r in up)     # sell ladder above
+    assert all(r["price"] < price for r in down)   # buy ladder below
+    # Holdings size both ladders off position_shares; weights normalise to ~1
+    assert sum(r["weight"] for r in up) == pytest.approx(1.0, abs=1e-3)
+    assert all(r["shares"] is not None for r in up)
+
+
+def test_analyze_execution_entry_primary_down():
+    df = _ohlcv(n=160, start=100.0, step=0.25, vol=1_000_000)
+    plan = analyze_execution("FAKE", df, side="entry",
+                             ref_shares=1_000, cfg={"options_enabled": False})
+    assert plan["primary"] == "down"
+    assert plan["ref_shares"] == 1_000
+    assert sum(r["shares"] for r in plan["ladder_down"]) == pytest.approx(1_000, abs=2)
+
+
+def test_ladder_over_cap_flag():
+    # ref_shares far above the per-day cap → every rung flagged over_cap
+    rungs = build_ladder(price=100.0, atr_val=2.0, hvn=[], side="exit",
+                         n_rungs=4, spacing_atr=0.5, snap_atr=0.5,
+                         ref_shares=1_000_000, max_shares_day=10_000)
+    assert all(r["over_cap"] for r in rungs)
+    assert all(r["shares"] > 10_000 for r in rungs)
+
+
 def test_analyze_execution_thin_data_returns_none():
     df = pd.DataFrame({"Close": []})
     assert analyze_execution("FAKE", df, side="exit", cfg={"options_enabled": False}) is None

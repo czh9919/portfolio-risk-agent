@@ -299,6 +299,9 @@ def run_portfolio_pipeline(run_mode: str = "full", config: dict = None, on_log=N
 
         exec_cfg   = (config or {}).get("execution", {})
         ohlcv_days = int(exec_cfg.get("ohlcv_days", 180))
+        max_pos_pct = float(exec_cfg.get("max_position_pct", 0.15))
+        target_eur  = max_pos_pct * float(metrics.get("nav_eur") or 0.0)
+        wl_cur = {w["ticker"]: w.get("currency", "USD") for w in load_watchlist()}
 
         held = {h["ticker"]: h for h in holdings if h.get("asset_class", "equity") == "equity"}
         buy_watch = [
@@ -331,9 +334,16 @@ def run_portfolio_pipeline(run_mode: str = "full", config: dict = None, on_log=N
 
         for tk in buy_watch:
             df = ohlcv.get(tk)
-            if df is None:
+            if df is None or df.empty or "Close" not in df.columns:
                 continue
-            plan = analyze_execution(tk, df, side="entry", cfg=exec_cfg)
+            # Target a max_position_pct slice of NAV → native share count
+            rate = fx_rates.get(f"{wl_cur.get(tk, 'USD')}EUR", 1.0)
+            price = float(df["Close"].dropna().iloc[-1]) if not df["Close"].dropna().empty else None
+            ref_shares = None
+            if price and rate and target_eur > 0:
+                ref_shares = (target_eur / rate) / price
+            plan = analyze_execution(tk, df, side="entry",
+                                     ref_shares=ref_shares, cfg=exec_cfg)
             if plan:
                 execution.append(plan)
 

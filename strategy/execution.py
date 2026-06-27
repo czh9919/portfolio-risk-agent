@@ -25,6 +25,7 @@ Components (per ticker):
 Everything is best-effort and wrapped so a single bad ticker never breaks the
 pipeline; missing inputs yield None fields, not exceptions.
 """
+import contextlib
 import logging
 import math
 from datetime import date, datetime
@@ -34,6 +35,25 @@ import numpy as np
 import pandas as pd
 
 logger = logging.getLogger(__name__)
+
+
+@contextlib.contextmanager
+def _quiet_yfinance():
+    """Silence yfinance's internal ERROR spam for best-effort lookups.
+
+    yfinance logs at ERROR for expected misses — ETFs with no earnings dates,
+    bond CUSIP-style tickers with no option chain — even though we catch the
+    empty result. Raise its loggers to CRITICAL for the duration of the call.
+    """
+    names = ("yfinance", "yfinance.utils", "yfinance.data", "yfinance.ticker")
+    saved = {n: logging.getLogger(n).level for n in names}
+    for n in names:
+        logging.getLogger(n).setLevel(logging.CRITICAL)
+    try:
+        yield
+    finally:
+        for n, lvl in saved.items():
+            logging.getLogger(n).setLevel(lvl)
 
 # Defaults — overridden by config/settings.yaml::execution
 DEFAULTS = {
@@ -46,6 +66,7 @@ DEFAULTS = {
     "hvn_snap_atr":     0.5,    # snap a rung to an HVN within this × ATR
     "adv_window":       20,     # trading days for average daily volume
     "participation_pct": 0.08,  # ≤8% of ADV per day (5–10% band)
+    "max_position_pct": 0.15,   # watchlist sizing: target ≤15% of NAV per name
     "options_enabled":  True,
     "risk_free_rate":   0.035,
 }
@@ -83,27 +104,50 @@ def anchored_vwap(df: pd.DataFrame, anchor: Optional[date]) -> Optional[float]:
     return vwap if vwap == vwap else None
 
 
-def volume_profile_hvn(df: pd.DataFrame, bins: int, lookback: int,
-                       top: int) -> list[float]:
-    """High-volume-node price levels (bin centres), highest volume first."""
+def volume_profile(df: pd.DataFrame, bins: int, lookback: int
+                   ) -> tuple[Optional[np.ndarray], Optional[np.ndarray], Optional[np.ndarray]]:
+    """Binned volume profile over the last `lookback` bars.
+
+    Returns (edges, centres, mass) where mass[i] is the total volume traded with
+    a close inside bucket i. Returns (None, None, None) when there isn't enough
+    clean data to build a profile.
+    """
     if df is None or "Volume" not in df.columns:
-        return []
+        return None, None, None
     seg = df.tail(lookback)
     closes, vols = seg["Close"].to_numpy(), seg["Volume"].to_numpy()
     mask = np.isfinite(closes) & np.isfinite(vols) & (vols > 0)
     closes, vols = closes[mask], vols[mask]
     if closes.size < bins:
-        return []
+        return None, None, None
     lo, hi = closes.min(), closes.max()
     if hi <= lo:
-        return []
+        return None, None, None
     edges = np.linspace(lo, hi, bins + 1)
     idx = np.clip(np.digitize(closes, edges) - 1, 0, bins - 1)
     binned = np.zeros(bins)
     np.add.at(binned, idx, vols)
     centres = (edges[:-1] + edges[1:]) / 2.0
+    return edges, centres, binned
+
+
+def volume_profile_hvn(df: pd.DataFrame, bins: int, lookback: int,
+                       top: int) -> list[float]:
+    """High-volume-node price levels (bin centres), highest volume first."""
+    edges, centres, binned = volume_profile(df, bins, lookback)
+    if centres is None:
+        return []
     order = np.argsort(binned)[::-1]
     return [float(centres[i]) for i in order[:top] if binned[i] > 0]
+
+
+def _mass_at_price(price: float, edges: Optional[np.ndarray],
+                   mass: Optional[np.ndarray]) -> float:
+    """Volume mass of the profile bucket containing `price` (0.0 if out of range)."""
+    if edges is None or mass is None or price is None:
+        return 0.0
+    i = int(np.clip(np.digitize([price], edges)[0] - 1, 0, len(mass) - 1))
+    return float(mass[i])
 
 
 def adv(df: pd.DataFrame, window: int) -> tuple[Optional[float], Optional[float]]:
@@ -138,11 +182,21 @@ def _cost_cross_date(df: pd.DataFrame, avg_cost: float) -> Optional[date]:
 # ── Ladder ───────────────────────────────────────────────────────────────────
 
 def build_ladder(price: float, atr_val: float, hvn: list[float], side: str,
-                 n_rungs: int, spacing_atr: float, snap_atr: float) -> list[dict]:
+                 n_rungs: int, spacing_atr: float, snap_atr: float,
+                 *,
+                 edges: Optional[np.ndarray] = None,
+                 mass: Optional[np.ndarray] = None,
+                 ref_shares: Optional[float] = None,
+                 max_shares_day: Optional[float] = None) -> list[dict]:
     """
     Generate n_rungs limit levels spaced spacing_atr × ATR from the current
-    price (above for exits, below for entries), each snapped to the nearest HVN
-    when one sits within snap_atr × ATR.
+    price (above for "exit"/sell, below for "entry"/buy), each snapped to the
+    nearest HVN when one sits within snap_atr × ATR.
+
+    When a volume profile (edges, mass) is supplied each rung is weighted by the
+    liquidity at its price bucket, normalised across the ladder; otherwise weights
+    are equal. With ref_shares the weight is turned into a share count, and with
+    max_shares_day each rung is flagged over_cap when it exceeds the ADV cap.
     """
     if price is None or atr_val is None or atr_val <= 0 or n_rungs <= 0:
         return []
@@ -165,7 +219,25 @@ def build_ladder(price: float, atr_val: float, hvn: list[float], side: str,
             "price":   round(float(level), 2),
             "at_hvn":  snapped is not None,
             "dist_pct": round((level / price - 1.0) * 100.0, 2),
+            "_mass":   _mass_at_price(level, edges, mass),
         })
+    if not rungs:
+        return []
+
+    # Liquidity-weighted sizing, normalised across the ladder (equal if no mass)
+    total_mass = sum(r["_mass"] for r in rungs)
+    n = len(rungs)
+    for r in rungs:
+        w = (r["_mass"] / total_mass) if total_mass > 0 else (1.0 / n)
+        r["weight"] = round(w, 4)
+        if ref_shares and ref_shares > 0:
+            sh = round(w * float(ref_shares))
+            r["shares"] = int(sh)
+            r["over_cap"] = bool(max_shares_day and sh > max_shares_day)
+        else:
+            r["shares"] = None
+            r["over_cap"] = False
+        del r["_mass"]
     return rungs
 
 
@@ -187,15 +259,16 @@ def options_levels(ticker: str, spot: float, r: float) -> Optional[dict]:
     """
     try:
         import yfinance as yf
-        tk = yf.Ticker(ticker)
-        expiries = list(tk.options or [])
-        if not expiries:
-            return None
-        today = date.today()
-        # Nearest expiry at least ~10 calendar days out (skip same-week noise)
-        future = [e for e in expiries if (datetime.strptime(e, "%Y-%m-%d").date() - today).days >= 10]
-        expiry = future[0] if future else expiries[-1]
-        chain = tk.option_chain(expiry)
+        with _quiet_yfinance():
+            tk = yf.Ticker(ticker)
+            expiries = list(tk.options or [])
+            if not expiries:
+                return None
+            today = date.today()
+            # Nearest expiry at least ~10 calendar days out (skip same-week noise)
+            future = [e for e in expiries if (datetime.strptime(e, "%Y-%m-%d").date() - today).days >= 10]
+            expiry = future[0] if future else expiries[-1]
+            chain = tk.option_chain(expiry)
         calls, puts = chain.calls, chain.puts
         if calls is None or puts is None or calls.empty or puts.empty:
             return None
@@ -246,8 +319,9 @@ def last_earnings_date(ticker: str) -> Optional[date]:
     """Most recent *past* earnings date (anchor for the earnings VWAP)."""
     try:
         import yfinance as yf
-        tk = yf.Ticker(ticker)
-        df = tk.get_earnings_dates(limit=16)
+        with _quiet_yfinance():
+            tk = yf.Ticker(ticker)
+            df = tk.get_earnings_dates(limit=16)
         if df is None or df.empty:
             return None
         idx = pd.to_datetime(df.index).tz_localize(None) if df.index.tz is not None \
@@ -269,13 +343,21 @@ def analyze_execution(
     position_shares: Optional[float] = None,
     avg_cost_native: Optional[float] = None,
     entry_date: Optional[date] = None,
+    ref_shares: Optional[float] = None,
     cfg: Optional[dict] = None,
 ) -> Optional[dict]:
     """
-    Build the full execution plan for one ticker. `side` is "exit" for held
-    names and "entry" for watchlist BUY candidates. Returns a dict consumed by
-    the report and (for the cap) the paper engine, or None if price data is
-    too thin to say anything.
+    Build the full execution plan for one ticker.
+
+    Every stock gets BOTH a descending entry ladder (建仓, below price) and an
+    ascending exit ladder (减仓, above price); `side` only marks which one is the
+    primary intent ("exit" for held names, "entry" for watchlist BUY candidates).
+
+    `ref_shares` sizes the ladders: for held names it defaults to position_shares
+    (the exit ladder scales out the position); for watchlist names the caller
+    passes a target share count (max_position_pct × NAV ÷ price). Returns a dict
+    consumed by the report and (for the cap) the paper engine, or None if price
+    data is too thin to say anything.
     """
     c = {**DEFAULTS, **(cfg or {})}
     if df is None or df.empty or "Close" not in df.columns:
@@ -286,6 +368,7 @@ def analyze_execution(
     price = float(closes.iloc[-1])
 
     atr_val = atr(df, c["atr_period"])
+    edges, _centres, mass = volume_profile(df, c["hvn_bins"], c["hvn_lookback"])
     hvn = volume_profile_hvn(df, c["hvn_bins"], c["hvn_lookback"], c["hvn_top"])
     adv_shares, adv_dollar = adv(df, c["adv_window"])
 
@@ -304,16 +387,27 @@ def analyze_execution(
     ref_vwap = vwap_earn if vwap_earn is not None else vwap_cost
     verdict, prem_pct = _verdict(side, price, ref_vwap)
 
-    # Ladder only when the verdict says to act
-    act = verdict in ("REDUCE", "ACCUMULATE")
-    ladder = build_ladder(price, atr_val, hvn, side, c["n_rungs"],
-                          c["rung_spacing_atr"], c["hvn_snap_atr"]) if act else []
-
     # Participation cap
     pct = float(c["participation_pct"])
     max_shares_day = adv_shares * pct if adv_shares else None
+
+    # Sizing reference: held → real position; watchlist → caller-supplied target
+    up_ref = ref_shares if ref_shares is not None else position_shares
+    down_ref = ref_shares if ref_shares is not None else position_shares
+
+    # Both ladders, always. Up = 减仓 (sell, above), Down = 建仓 (buy, below).
+    ladder_up = build_ladder(
+        price, atr_val, hvn, "exit", c["n_rungs"],
+        c["rung_spacing_atr"], c["hvn_snap_atr"],
+        edges=edges, mass=mass, ref_shares=up_ref, max_shares_day=max_shares_day)
+    ladder_down = build_ladder(
+        price, atr_val, hvn, "entry", c["n_rungs"],
+        c["rung_spacing_atr"], c["hvn_snap_atr"],
+        edges=edges, mass=mass, ref_shares=down_ref, max_shares_day=max_shares_day)
+    primary = "up" if side == "exit" else "down"
+
     days_to_exit = None
-    if side == "exit" and position_shares and max_shares_day and max_shares_day > 0:
+    if position_shares and max_shares_day and max_shares_day > 0:
         days_to_exit = round(float(position_shares) / max_shares_day, 1)
 
     opts = options_levels(ticker, price, c["risk_free_rate"]) if c["options_enabled"] else None
@@ -333,7 +427,10 @@ def analyze_execution(
         "verdict":         verdict,
         "premium_pct":     prem_pct,
         "hvn":             [round(h, 2) for h in hvn],
-        "ladder":          ladder,
+        "ladder_up":       ladder_up,
+        "ladder_down":     ladder_down,
+        "primary":         primary,
+        "ref_shares":      int(up_ref) if up_ref else None,
         "adv_shares":      int(adv_shares) if adv_shares else None,
         "adv_dollar":      adv_dollar,
         "participation_pct": pct,

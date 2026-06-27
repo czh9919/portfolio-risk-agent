@@ -54,6 +54,7 @@ execution:
   hvn_snap_atr:      0.5    # snap a rung to an HVN within this × ATR
   adv_window:        20     # trading days for average daily volume
   participation_pct: 0.08   # ≤8% of ADV per day (hard liquidity cap; 5–10% band)
+  max_position_pct:  0.15   # watchlist ladder sizing: target ≤15% of NAV per name
   options_enabled:   true   # attempt Max Pain / peak-gamma for every ticker
   ohlcv_days:        180    # OHLCV history window pulled for this analysis
 

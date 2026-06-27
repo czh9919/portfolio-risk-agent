@@ -72,7 +72,7 @@ jobs:
       # Commit paper-trade state back to the repo: promoted/pruned watchlist
       # AND the durable NAV history / trade log / trailing-stop watermarks under
       # data/paper_state (these are .gitignored in cache/ and would otherwise be
-      # lost between runs). pull --rebase avoids non-fast-forward push failures.
+      # lost between runs).
       - name: Commit paper-trade state
         run: |
           git config user.name  "github-actions[bot]"
@@ -80,11 +80,25 @@ jobs:
           git add config/watchlist.csv data/paper_state 2>/dev/null || true
           if git diff --staged --quiet; then
             echo "No paper-trade state changes to commit"
-          else
-            git commit -m "chore: paper-trade state update (watchlist + NAV/trade log) [skip ci]"
-            git pull --rebase origin master || { git rebase --abort 2>/dev/null; exit 0; }
-            git push
+            exit 0
           fi
+          git commit -m "chore: paper-trade state update (watchlist + NAV/trade log) [skip ci]"
+          # Push with retry. This job is the sole writer of data/paper_state and
+          # runs once per day, so on a rebase conflict we keep THIS run's state
+          # (-X theirs favours the rebased commit) instead of silently dropping
+          # the day's NAV/trade log. Fail loudly if it still can't push, rather
+          # than exiting 0 and freezing the committed history.
+          for attempt in 1 2 3 4 5; do
+            if git pull --rebase -X theirs origin master && git push; then
+              echo "Paper-trade state pushed (attempt $attempt)"
+              exit 0
+            fi
+            echo "Push attempt $attempt failed — retrying"
+            git rebase --abort 2>/dev/null || true
+            sleep $((attempt * 5))
+          done
+          echo "ERROR: could not push paper-trade state after 5 attempts" >&2
+          exit 1
 
       # Persist cache for next run
       - name: Save persistent cache

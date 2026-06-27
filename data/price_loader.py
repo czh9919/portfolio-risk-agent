@@ -15,6 +15,7 @@ Availability flags (PRD §6.1):
 """
 import logging
 import os
+import contextlib
 import time
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
@@ -26,6 +27,25 @@ import yfinance as yf
 STALE_PRICE_DAYS = 4   # last close must be ≤4 calendar days old
 
 logger = logging.getLogger(__name__)
+
+
+@contextlib.contextmanager
+def _quiet_yfinance():
+    """Silence yfinance's internal ERROR spam during a batch download.
+
+    Non-equity holdings (e.g. the Treasury bond ticker "T 3 3/4 06/30/27")
+    404 on Yahoo and yfinance logs that at ERROR, even though we handle the
+    miss with the Massive fallback. Raise its loggers to CRITICAL for the call.
+    """
+    names = ("yfinance", "yfinance.utils", "yfinance.data", "yfinance.ticker")
+    saved = {n: logging.getLogger(n).level for n in names}
+    for n in names:
+        logging.getLogger(n).setLevel(logging.CRITICAL)
+    try:
+        yield
+    finally:
+        for n, lvl in saved.items():
+            logging.getLogger(n).setLevel(lvl)
 
 FX_TICKERS = {
     "USDEUR": "EURUSD=X",   # invert
@@ -90,14 +110,15 @@ def _fetch_yfinance_batch(
     """
     result: dict[str, Optional[pd.Series]] = {t: None for t in tickers}
     try:
-        raw = yf.download(
-            tickers,
-            start=start,
-            end=end,
-            auto_adjust=True,
-            progress=False,
-            threads=True,
-        )
+        with _quiet_yfinance():
+            raw = yf.download(
+                tickers,
+                start=start,
+                end=end,
+                auto_adjust=True,
+                progress=False,
+                threads=True,
+            )
         if raw is None or raw.empty:
             logger.warning("yfinance batch: empty response")
             return result
@@ -187,10 +208,11 @@ def load_ohlcv(tickers: list[str], days: int = 252) -> dict[str, pd.DataFrame]:
     out: dict[str, pd.DataFrame] = {}
 
     try:
-        raw = yf.download(
-            tickers, start=start, end=end,
-            auto_adjust=True, progress=False, threads=True, group_by="ticker",
-        )
+        with _quiet_yfinance():
+            raw = yf.download(
+                tickers, start=start, end=end,
+                auto_adjust=True, progress=False, threads=True, group_by="ticker",
+            )
     except Exception as exc:
         logger.error(f"load_ohlcv: yfinance batch failed: {exc}")
         return out

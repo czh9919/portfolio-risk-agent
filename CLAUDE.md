@@ -166,7 +166,7 @@ Report + Email (notify.report_gen, notify.mailer)
 
 ### YAML Config Files
 
-- **`config/settings.yaml`**: History window (730d), FF5 window (252d), MC paths (50K), model selection, `paper_trade:` block (universe size, risk-gate limits, stop-loss/trailing-stop, rebalance threshold, CGT rate, VIX halt, earnings-avoid window)
+- **`config/settings.yaml`**: History window (730d), FF5 window (252d), MC paths (50K), model selection, `paper_trade:` block (universe size, risk-gate limits, stop-loss/trailing-stop, rebalance threshold, CGT rate, VIX halt, earnings-avoid window, core parking: idle cash swept into `core_parking_ticker` ETF, sold to fund signal BUYs, exempt from caps/stops/signal trading)
 - **`config/thresholds.yaml`**: Per-metric alert thresholds, severity, bilingual labels; `amber_ratio` (default 0.8) — metric within 80–100% of its threshold shows AMBER in reports; only RED (actual breach) fires alert emails
 - **`config/volatility.yaml`**: EWMA λ (0.94), GARCH params, ECB rate (3.5%), window sizes
 - **`config/watchlist.csv`**: Tickers (equity/bond/gold), asset_class, currency — edit and commit; takes effect on next run

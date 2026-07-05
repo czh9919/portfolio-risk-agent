@@ -973,6 +973,7 @@ def generate_orders(
     buying_power:       float = None,
     vix:                float = None,
     market_open:        bool  = True,
+    cash:               float = None,
 ) -> list[dict]:
     """
     Compute and (unless dry_run) execute Alpaca paper orders.
@@ -987,16 +988,31 @@ def generate_orders(
       • Portfolio beta vs SPY > limit
       • Equity drawdown > halt threshold
     SELL / close orders always execute regardless of gates.
+
+    Core parking (paper_cfg["core_parking_ticker"], e.g. SPY):
+      Idle cash above core_cash_buffer_pct is swept into the core ETF at the
+      end of each run, and the core is sold to fund new signal BUYs. The core
+      is exempt from signal trading, per-position caps, rebalancing, and
+      stop-losses — market-level de-risking is governed by the VIX/drawdown
+      gates (which stop new sweeps but never force-liquidate the core).
     """
     from brokers.alpaca import place_order, close_position
+
+    core_ticker = str((paper_cfg or {}).get("core_parking_ticker", "") or "").upper()
+    core_buffer = float((paper_cfg or {}).get("core_cash_buffer_pct", 0.02))
 
     # BUY requires the robust (overfitting-resistant) signal — prevents
     # data-snooped false positives from the daily random S&P 500 draw.
     # SELL fires on either raw OR robust signal for fast de-risking.
-    buy_signals  = [r for r in results if r.get("robust_signal") == "BUY"]
+    # The core parking ETF never trades on its own FF5 signal.
+    buy_signals  = [
+        r for r in results
+        if r.get("robust_signal") == "BUY" and r["ticker"] != core_ticker
+    ]
     sell_signals = [
         r for r in results
-        if r.get("signal") == "SELL" or r.get("robust_signal") == "SELL"
+        if (r.get("signal") == "SELL" or r.get("robust_signal") == "SELL")
+        and r["ticker"] != core_ticker
     ]
     orders: list[dict] = []
     exiting: set = set()   # tickers already queued for close (sell signal or stop-loss)
@@ -1025,7 +1041,7 @@ def generate_orders(
     stop_loss_pct = float((paper_cfg or {}).get("stop_loss_pct", 0.0))
     if stop_loss_pct > 0:
         for ticker, pos in positions.items():
-            if ticker in exiting:
+            if ticker in exiting or ticker == core_ticker:
                 continue
             try:
                 plpc = float(pos.get("unrealized_plpc") or 0.0)
@@ -1055,7 +1071,7 @@ def generate_orders(
     if trailing_pct > 0:
         watermarks = _load_watermarks()
         for ticker, pos in positions.items():
-            if ticker in exiting:
+            if ticker in exiting or ticker == core_ticker:
                 continue
             pd_obj = price_data.get(ticker)
             if pd_obj is None or pd_obj.closes is None or pd_obj.closes.empty:
@@ -1097,13 +1113,33 @@ def generate_orders(
         allow_buys = False
         logger.info("Paper: BUY orders skipped — market closed")
     elif risk is not None and paper_cfg is not None:
-        allow_buys, gate_reason = _risk_gates(risk, paper_cfg, equity, vix=vix)
+        gate_risk = risk
+        if core_ticker and core_ticker in positions and risk.get("n_positions", 0) > 0:
+            # The parking ETF is cash-equivalent, not an alpha bet — it must
+            # not consume a max_positions slot.
+            gate_risk = {**risk, "n_positions": risk["n_positions"] - 1}
+        allow_buys, gate_reason = _risk_gates(gate_risk, paper_cfg, equity, vix=vix)
         if not allow_buys:
             logger.warning(f"Paper: BUY orders blocked — {gate_reason}")
 
     # Budget shared between rebalance top-ups and new buys
     budget       = float(buying_power) if buying_power is not None else equity
     remaining_bp = budget
+
+    # Estimated free cash, updated as orders are planned (sells add, buys drain)
+    cash_avail = float(cash) if cash is not None else max(0.0, budget)
+
+    def _planned_cash_delta() -> float:
+        delta = 0.0
+        for o in orders:
+            val = o.get("value_usd")
+            if val is None:
+                try:
+                    val = float(positions.get(o["ticker"], {}).get("market_value") or 0.0)
+                except (TypeError, ValueError):
+                    val = 0.0
+            delta += val if o["side"] == "sell" else -val
+        return delta
 
     # ── Rebalance existing BUY-signal holdings ────────────────────────────────
     rebal_threshold = float((paper_cfg or {}).get("rebalance_threshold", 0.05))
@@ -1118,7 +1154,7 @@ def generate_orders(
             gates_allow_buys=allow_buys,
             remaining_bp=remaining_bp,
             dry_run=dry_run,
-            exiting=exiting,
+            exiting=exiting | ({core_ticker} if core_ticker else set()),
         )
         orders.extend(rebal_orders)
 
@@ -1128,6 +1164,10 @@ def generate_orders(
     # ── IR-proportional sizing for new BUY positions ──────────────────────────
     new_buys = [r for r in buy_signals if r["ticker"] not in positions]
     if not new_buys:
+        _core_sweep(
+            core_ticker, core_buffer, cash_avail + _planned_cash_delta(),
+            orders, positions, price_data, equity, dry_run,
+        )
         return orders
 
     earnings_avoid_days = int((paper_cfg or {}).get("earnings_avoid_days", 0))
@@ -1154,6 +1194,44 @@ def generate_orders(
     raw_w   = irs / irs.sum()                       # proportional weights
     alloc_w = np.minimum(raw_w, max_pos_pct)        # cap each at max_pos_pct
     # Do NOT renormalise: if total < 1 that's intentional (leaves cash buffer)
+
+    # ── Fund new BUYs from the core parking position when cash is short ───────
+    core_pos = positions.get(core_ticker) if core_ticker else None
+    if core_pos is not None:
+        intended  = float(equity * alloc_w.sum())
+        cash_now  = cash_avail + _planned_cash_delta()
+        shortfall = intended + core_buffer * equity - cash_now
+        core_pd   = price_data.get(core_ticker)
+        core_px   = (float(core_pd.closes.iloc[-1])
+                     if core_pd is not None and core_pd.closes is not None
+                     and not core_pd.closes.empty else 0.0)
+        try:
+            core_mv = float(core_pos.get("market_value") or 0.0)
+        except (TypeError, ValueError):
+            core_mv = 0.0
+        if shortfall > 0 and core_mv > 0 and core_px > 0:
+            fund_val = min(shortfall, core_mv)
+            fund_qty = round(fund_val / core_px, 6)
+            if fund_qty >= 0.001:
+                remaining_bp += fund_val
+                orders.append({
+                    "ticker":    core_ticker, "side": "sell", "qty": fund_qty,
+                    "price_est": core_px,
+                    "value_usd": fund_qty * core_px,
+                    "reason": (
+                        f"CORE FUNDING  sell parked {core_ticker} "
+                        f"${fund_val:,.0f} to fund signal BUYs"
+                    ),
+                })
+                if not dry_run:
+                    try:
+                        place_order(core_ticker, fund_qty, "sell")
+                        logger.info(
+                            f"Paper: CORE FUNDING sold {fund_qty}x {core_ticker}"
+                            f" (${fund_val:,.0f})"
+                        )
+                    except Exception as e:
+                        logger.warning(f"Paper: core funding sell failed — {e}")
 
     for r, w in zip(new_buys, alloc_w):
         ticker = r["ticker"]
@@ -1217,7 +1295,65 @@ def generate_orders(
             except Exception as e:
                 logger.warning(f"Paper: buy {ticker} failed — {e}")
 
+    _core_sweep(
+        core_ticker, core_buffer, cash_avail + _planned_cash_delta(),
+        orders, positions, price_data, equity, dry_run,
+    )
     return orders
+
+
+def _core_sweep(
+    core_ticker: str,
+    core_buffer: float,
+    cash_est:    float,
+    orders:      list[dict],
+    positions:   dict,
+    price_data:  dict,
+    equity:      float,
+    dry_run:     bool,
+) -> None:
+    """
+    Sweep estimated post-trade idle cash (above the buffer) into the core
+    parking ETF. Appends the order to `orders` and executes unless dry_run.
+    Callers only invoke this when risk gates allow buys and the market is open.
+    """
+    from brokers.alpaca import place_order
+
+    if not core_ticker:
+        return
+    pd_obj = price_data.get(core_ticker)
+    if pd_obj is None or pd_obj.closes is None or pd_obj.closes.empty:
+        logger.warning(f"Paper: core sweep skipped — no price data for {core_ticker}")
+        return
+    price = float(pd_obj.closes.iloc[-1])
+    if price <= 0:
+        return
+
+    sweep_val = cash_est - core_buffer * equity
+    # Minimum ticket avoids daily dust orders as NAV drifts around the buffer
+    if sweep_val < max(100.0, 0.005 * equity):
+        return
+    qty = round(sweep_val / price, 6)
+    if qty < 0.001:
+        return
+
+    orders.append({
+        "ticker":    core_ticker, "side": "buy", "qty": qty,
+        "price_est": price,
+        "value_usd": qty * price,
+        "reason": (
+            f"CORE SWEEP  idle cash ${sweep_val:,.0f} → {core_ticker}"
+            f"  (buffer {core_buffer*100:.0f}%)"
+        ),
+    })
+    if not dry_run:
+        try:
+            place_order(core_ticker, qty, "buy")
+            logger.info(
+                f"Paper: CORE SWEEP bought {qty}x {core_ticker} (${sweep_val:,.0f})"
+            )
+        except Exception as e:
+            logger.warning(f"Paper: core sweep buy failed — {e}")
 
 
 # ── Main pipeline ─────────────────────────────────────────────────────────────
@@ -1345,6 +1481,7 @@ def run_paper_trade_pipeline(config: dict) -> dict:
                 risk=risk_snapshot, paper_cfg=paper_cfg,
                 buying_power=account_info.get("buying_power"),
                 vix=vix, market_open=market_open,
+                cash=account_info.get("cash"),
             )
         except Exception as e:
             logger.error(f"Alpaca connection error: {e}")

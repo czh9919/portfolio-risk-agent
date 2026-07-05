@@ -206,6 +206,92 @@ def test_cgt_friction_suppresses_trim_on_big_winner():
     assert [o for o in orders if o["side"] == "sell"] == []
 
 
+# ── Core parking (idle cash → SPY) ────────────────────────────────────────────
+
+def _core_cfg(**over):
+    return _permissive_cfg(
+        core_parking_ticker="SPY", core_cash_buffer_pct=0.02, **over
+    )
+
+
+def test_core_sweep_buys_spy_with_idle_cash():
+    orders = generate_orders(
+        [], positions={}, equity=100_000, price_data={"SPY": FakePD(500.0)},
+        max_pos_pct=0.15, dry_run=True, risk=_ok_risk(),
+        paper_cfg=_core_cfg(), buying_power=100_000, market_open=True,
+        cash=100_000,
+    )
+    assert len(orders) == 1
+    o = orders[0]
+    assert o["ticker"] == "SPY" and o["side"] == "buy"
+    # 100k cash − 2% buffer = 98k swept
+    assert o["value_usd"] == pytest.approx(98_000, rel=1e-3)
+
+
+def test_core_sweep_blocked_by_gates_and_closed_market():
+    for kw in ({"vix": 30, "market_open": True}, {"market_open": False}):
+        orders = generate_orders(
+            [], positions={}, equity=100_000, price_data={"SPY": FakePD(500.0)},
+            max_pos_pct=0.15, dry_run=True, risk=_ok_risk(),
+            paper_cfg=_core_cfg(), buying_power=100_000, cash=100_000, **kw,
+        )
+        assert orders == []
+
+
+def test_core_funding_sell_covers_new_buy():
+    # Cash 1k, core SPY 97k. One BUY signal wants 15% (15k) → core must fund it.
+    results = [{"ticker": "AAA", "robust_signal": "BUY", "signal": "BUY",
+                "ir": 2.0, "t_alpha": 3.0}]
+    positions = {"SPY": {"qty": "194", "market_value": "97000",
+                         "unrealized_plpc": "0.05"}}
+    orders = generate_orders(
+        results, positions=positions, equity=100_000,
+        price_data={"AAA": FakePD(100.0), "SPY": FakePD(500.0)},
+        max_pos_pct=0.15, dry_run=True, risk=_ok_risk(),
+        paper_cfg=_core_cfg(), buying_power=2_000, market_open=True,
+        cash=1_000,
+    )
+    core_sells = [o for o in orders if o["ticker"] == "SPY" and o["side"] == "sell"]
+    buys       = [o for o in orders if o["ticker"] == "AAA" and o["side"] == "buy"]
+    assert len(core_sells) == 1 and "CORE FUNDING" in core_sells[0]["reason"]
+    assert len(buys) == 1
+    # Funding must cover the buy: 15k target + 2k buffer − 1k cash = 16k
+    assert core_sells[0]["value_usd"] == pytest.approx(16_000, rel=1e-3)
+    assert buys[0]["value_usd"] == pytest.approx(15_000, rel=1e-3)
+
+
+def test_core_exempt_from_sell_signal_and_stop_loss():
+    # SPY flags SELL and is 20% underwater — core must NOT be closed.
+    results = [{"ticker": "SPY", "robust_signal": "SELL", "signal": "SELL",
+                "ir": -1.0, "t_alpha": -2.0}]
+    positions = {"SPY": {"qty": "194", "market_value": "97000",
+                         "unrealized_plpc": "-0.20"}}
+    orders = generate_orders(
+        results, positions=positions, equity=100_000,
+        price_data={"SPY": FakePD(500.0)},
+        max_pos_pct=0.15, dry_run=True, risk=_ok_risk(),
+        paper_cfg=_core_cfg(stop_loss_pct=0.15, trailing_stop_pct=0.0),
+        buying_power=3_000, market_open=True, cash=3_000,
+    )
+    assert [o for o in orders if o["side"] == "sell"] == []
+
+
+def test_core_does_not_consume_max_positions_slot():
+    # 10 positions incl. core; gate limit 10 → core exemption keeps buys open.
+    results = [{"ticker": "AAA", "robust_signal": "BUY", "signal": "BUY",
+                "ir": 2.0, "t_alpha": 3.0}]
+    risk = _ok_risk(); risk["n_positions"] = 10
+    positions = {"SPY": {"qty": "10", "market_value": "5000", "unrealized_plpc": "0.0"}}
+    orders = generate_orders(
+        results, positions=positions, equity=100_000,
+        price_data={"AAA": FakePD(100.0), "SPY": FakePD(500.0)},
+        max_pos_pct=0.15, dry_run=True, risk=risk,
+        paper_cfg=_core_cfg(), buying_power=100_000, market_open=True,
+        cash=95_000,
+    )
+    assert any(o["ticker"] == "AAA" and o["side"] == "buy" for o in orders)
+
+
 # ── Performance metrics ───────────────────────────────────────────────────────
 
 def test_performance_empty_history():

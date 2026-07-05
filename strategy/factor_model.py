@@ -681,11 +681,17 @@ def compute_robust_signal(
             ta = float("nan")
         win_results[w] = {"alpha_daily": a_d, "t_alpha": ta}
 
-    # Consistency: # windows with |t| > 1.5 and same sign as the majority
+    # Consistency: # windows significant at a t-threshold scaled by √(w/w_max)
+    # and same sign as the majority. A constant true α with t=1.5 at the
+    # longest window has expected t ≈ 1.5·√(w/w_max) at shorter windows, so a
+    # flat 1.5 cutoff effectively demanded t≈3 at 252d and rejected nearly all
+    # genuine signals.
+    w_max = max(win_results) if win_results else max(windows)
     sig_signs = [
         np.sign(r["alpha_daily"])
-        for r in win_results.values()
-        if r["t_alpha"] == r["t_alpha"] and abs(r["t_alpha"]) > 1.5
+        for w, r in win_results.items()
+        if r["t_alpha"] == r["t_alpha"]
+        and abs(r["t_alpha"]) > 1.5 * math.sqrt(w / w_max)
     ]
     if sig_signs:
         majority_sign = np.sign(sum(sig_signs))

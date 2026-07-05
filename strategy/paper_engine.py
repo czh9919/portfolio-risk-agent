@@ -1267,10 +1267,11 @@ def run_paper_trade_pipeline(config: dict) -> dict:
         logger.error("FF5 data unavailable — aborting paper trade pipeline")
         return {}
 
-    # Multiple-testing deflation must reflect the full effective search space.
-    # We draw daily from the entire S&P 500, so floor at 500 rather than the
-    # current-day sample size — otherwise deflated IR is far too lenient.
-    n_strategies = max(len(all_tickers), 500)
+    # Multiple-testing deflation reflects the per-decision search space (the
+    # ~50 tickers actually screened each day). The old floor of 500 (full
+    # S&P 500) pushed E[max IR] to ~3.0 annualized — beyond any stock-level
+    # FF5 α — so the strategy never opened a position in its first live month.
+    n_strategies = max(len(all_tickers), 50)
 
     # 4. Screen permanent watchlist
     logger.info("Screening permanent watchlist …")

@@ -274,11 +274,15 @@ def _send_paper_summary(
                 "color:#bdc3c7;font-size:13px'>No orders today / 今日无订单</td></tr>"
             )
         rows = ""
+        _side_style = {
+            "buy":   ("#27ae60", "#eafaf1", "买入"),
+            "sell":  ("#e74c3c", "#fdf0ef", "卖出"),
+            "short": ("#8e44ad", "#f5eef8", "做空"),
+            "cover": ("#2980b9", "#ebf5fb", "回补"),
+        }
         for o in orders:
-            side      = o.get("side", "")
-            sc        = "#27ae60" if side == "buy" else "#e74c3c"
-            sc_bg     = "#eafaf1" if side == "buy" else "#fdf0ef"
-            side_zh   = "买入" if side == "buy" else "卖出"
+            side = o.get("side", "")
+            sc, sc_bg, side_zh = _side_style.get(side, ("#7f8c8d", "#f4f6f6", side))
             px        = o.get("price_est")
             price_str = f"${px:.2f}" if px is not None else "—"
             reason    = o.get("reason", "")
@@ -995,11 +999,30 @@ def generate_orders(
       is exempt from signal trading, per-position caps, rebalancing, and
       stop-losses — market-level de-risking is governed by the VIX/drawdown
       gates (which stop new sweeps but never force-liquidate the core).
+
+    Short overlay (paper_cfg["short_max_total_pct"] > 0):
+      Robust SELL signals on non-held names open whole-share shorts of
+      short_pos_pct each, capped at short_max_total_pct total exposure.
+      Shorts are covered when the robust signal fades and are protected by
+      the same stop-loss as longs. Order sides: "short" / "cover".
+      Short-sale proceeds are collateral, not sweepable cash — the caller
+      passes cash net of short market value and shorts/covers are cash-neutral
+      on that basis.
     """
     from brokers.alpaca import place_order, close_position
 
     core_ticker = str((paper_cfg or {}).get("core_parking_ticker", "") or "").upper()
     core_buffer = float((paper_cfg or {}).get("core_cash_buffer_pct", 0.02))
+    short_pos_pct   = float((paper_cfg or {}).get("short_pos_pct", 0.04))
+    short_max_total = float((paper_cfg or {}).get("short_max_total_pct", 0.0))
+
+    def _pos_qty(pos: dict) -> float:
+        try:
+            return float(pos.get("qty") or 0.0)
+        except (TypeError, ValueError):
+            return 0.0
+
+    short_held = {t for t, p in positions.items() if _pos_qty(p) < 0}
 
     # BUY requires the robust (overfitting-resistant) signal — prevents
     # data-snooped false positives from the daily random S&P 500 draw.
@@ -1017,10 +1040,10 @@ def generate_orders(
     orders: list[dict] = []
     exiting: set = set()   # tickers already queued for close (sell signal or stop-loss)
 
-    # ── Close SELL-signaled held positions (gates do NOT apply) ───────────────
+    # ── Close SELL-signaled held LONG positions (gates do NOT apply) ──────────
     for r in sell_signals:
         ticker = r["ticker"]
-        if ticker not in positions or ticker in exiting:
+        if ticker not in positions or ticker in exiting or ticker in short_held:
             continue
         exiting.add(ticker)
         orders.append({
@@ -1037,6 +1060,34 @@ def generate_orders(
             except Exception as e:
                 logger.warning(f"Paper: close {ticker} failed — {e}")
 
+    # ── Cover shorts whose robust SELL signal has faded (gates do NOT apply) ──
+    result_by_ticker = {r["ticker"]: r for r in results}
+    for ticker in sorted(short_held):
+        if ticker in exiting:
+            continue
+        r = result_by_ticker.get(ticker)
+        # No screening result today (data gap / rotated out) → hold the short
+        if r is None or r.get("robust_signal") == "SELL":
+            continue
+        exiting.add(ticker)
+        pos = positions[ticker]
+        _qty = abs(_pos_qty(pos))
+        try:
+            _mv = abs(float(pos.get("market_value") or 0.0))
+        except (TypeError, ValueError):
+            _mv = 0.0
+        orders.append({
+            "ticker": ticker, "side": "cover", "qty": _qty,
+            "value_usd": _mv,
+            "reason": f"COVER  robust signal now {r.get('robust_signal', 'HOLD')}",
+        })
+        if not dry_run:
+            try:
+                close_position(ticker)
+                logger.info(f"Paper: COVERED short {ticker}")
+            except Exception as e:
+                logger.warning(f"Paper: cover {ticker} failed — {e}")
+
     # ── Stop-loss: close any held position past its unrealised-loss threshold ──
     stop_loss_pct = float((paper_cfg or {}).get("stop_loss_pct", 0.0))
     if stop_loss_pct > 0:
@@ -1052,9 +1103,11 @@ def generate_orders(
             exiting.add(ticker)
             _pd  = price_data.get(ticker)
             _px  = float(_pd.closes.iloc[-1]) if (_pd and _pd.closes is not None and not _pd.closes.empty) else None
-            _qty = int(float(pos.get("qty") or 0))
+            _qty = abs(int(_pos_qty(pos)))
             orders.append({
-                "ticker":    ticker, "side": "sell", "qty": _qty,
+                "ticker":    ticker,
+                "side":      "cover" if ticker in short_held else "sell",
+                "qty":       _qty,
                 "price_est": _px,
                 "value_usd": _qty * _px if _px else None,
                 "reason":    f"STOP-LOSS  unrealised P&L {plpc*100:.1f}% < -{stop_loss_pct*100:.0f}%",
@@ -1071,7 +1124,7 @@ def generate_orders(
     if trailing_pct > 0:
         watermarks = _load_watermarks()
         for ticker, pos in positions.items():
-            if ticker in exiting or ticker == core_ticker:
+            if ticker in exiting or ticker == core_ticker or ticker in short_held:
                 continue
             pd_obj = price_data.get(ticker)
             if pd_obj is None or pd_obj.closes is None or pd_obj.closes.empty:
@@ -1126,12 +1179,16 @@ def generate_orders(
     budget       = float(buying_power) if buying_power is not None else equity
     remaining_bp = budget
 
-    # Estimated free cash, updated as orders are planned (sells add, buys drain)
+    # Estimated free cash, updated as orders are planned (sells add, buys drain).
+    # Shorts/covers are neutral: `cash` is net of short market value, and on
+    # that basis opening or covering a short at market leaves it unchanged.
     cash_avail = float(cash) if cash is not None else max(0.0, budget)
 
     def _planned_cash_delta() -> float:
         delta = 0.0
         for o in orders:
+            if o["side"] not in ("buy", "sell"):
+                continue
             val = o.get("value_usd")
             if val is None:
                 try:
@@ -1154,7 +1211,7 @@ def generate_orders(
             gates_allow_buys=allow_buys,
             remaining_bp=remaining_bp,
             dry_run=dry_run,
-            exiting=exiting | ({core_ticker} if core_ticker else set()),
+            exiting=exiting | short_held | ({core_ticker} if core_ticker else set()),
         )
         orders.extend(rebal_orders)
 
@@ -1164,6 +1221,10 @@ def generate_orders(
     # ── IR-proportional sizing for new BUY positions ──────────────────────────
     new_buys = [r for r in buy_signals if r["ticker"] not in positions]
     if not new_buys:
+        remaining_bp = _open_short_orders(
+            results, positions, exiting, orders, price_data, equity,
+            paper_cfg, remaining_bp, dry_run, core_ticker, short_held,
+        )
         _core_sweep(
             core_ticker, core_buffer, cash_avail + _planned_cash_delta(),
             orders, positions, price_data, equity, dry_run,
@@ -1295,11 +1356,105 @@ def generate_orders(
             except Exception as e:
                 logger.warning(f"Paper: buy {ticker} failed — {e}")
 
+    remaining_bp = _open_short_orders(
+        results, positions, exiting, orders, price_data, equity,
+        paper_cfg, remaining_bp, dry_run, core_ticker, short_held,
+    )
     _core_sweep(
         core_ticker, core_buffer, cash_avail + _planned_cash_delta(),
         orders, positions, price_data, equity, dry_run,
     )
     return orders
+
+
+def _open_short_orders(
+    results:      list[dict],
+    positions:    dict,
+    exiting:      set,
+    orders:       list[dict],
+    price_data:   dict,
+    equity:       float,
+    paper_cfg:    dict,
+    remaining_bp: float,
+    dry_run:      bool,
+    core_ticker:  str,
+    short_held:   set,
+) -> float:
+    """
+    Open whole-share shorts (Alpaca disallows fractional shorting) on robust
+    SELL names not currently held, short_pos_pct each, capped at
+    short_max_total_pct gross short exposure. Appends to `orders`, executes
+    unless dry_run, returns updated remaining buying power. Callers only
+    invoke this when risk gates allow new positions.
+    """
+    from brokers.alpaca import place_order
+
+    short_pos_pct   = float((paper_cfg or {}).get("short_pos_pct", 0.04))
+    short_max_total = float((paper_cfg or {}).get("short_max_total_pct", 0.0))
+    if short_max_total <= 0 or short_pos_pct <= 0:
+        return remaining_bp
+
+    earnings_avoid_days = int((paper_cfg or {}).get("earnings_avoid_days", 0))
+
+    # Gross short exposure already on the book (minus covers queued this run)
+    gross_short = 0.0
+    for t in short_held:
+        if t in exiting:
+            continue
+        try:
+            gross_short += abs(float(positions[t].get("market_value") or 0.0))
+        except (TypeError, ValueError):
+            pass
+
+    cand = [
+        r for r in results
+        if r.get("robust_signal") == "SELL"
+        and r["ticker"] != core_ticker
+        and r["ticker"] not in positions
+        and r["ticker"] not in exiting
+    ]
+    # Most negative IR first = highest-conviction shorts
+    cand.sort(key=lambda r: r.get("ir") if r.get("ir") == r.get("ir") else 0.0)
+
+    cap = short_max_total * equity
+    for r in cand:
+        ticker = r["ticker"]
+        if gross_short >= cap - 1e-9:
+            break
+        if _near_earnings(ticker, earnings_avoid_days):
+            logger.info(
+                f"Paper: {ticker} SHORT skipped — earnings within {earnings_avoid_days}d"
+            )
+            continue
+        pd_obj = price_data.get(ticker)
+        if pd_obj is None or pd_obj.closes is None or pd_obj.closes.empty:
+            continue
+        price = float(pd_obj.closes.iloc[-1])
+        if price <= 0:
+            continue
+        target = min(short_pos_pct * equity, cap - gross_short, remaining_bp)
+        qty = int(target / price)
+        if qty < 1:
+            continue
+        value = qty * price
+        gross_short  += value
+        remaining_bp -= value
+        orders.append({
+            "ticker": ticker, "side": "short", "qty": qty,
+            "price_est": price, "value_usd": value,
+            "reason": (
+                f"SHORT signal  t={r.get('t_alpha', 0) or 0:.1f}"
+                f"  IR={r.get('ir', 0) or 0:.2f}"
+                f"  size={value/equity*100:.1f}%"
+            ),
+        })
+        if not dry_run:
+            try:
+                place_order(ticker, qty, "sell")
+                logger.info(f"Paper: SHORT {qty}x {ticker} @ ~${price:.2f}")
+            except Exception as e:
+                logger.warning(f"Paper: short {ticker} failed — {e}")
+    return remaining_bp
 
 
 def _core_sweep(
@@ -1481,7 +1636,12 @@ def run_paper_trade_pipeline(config: dict) -> dict:
                 risk=risk_snapshot, paper_cfg=paper_cfg,
                 buying_power=account_info.get("buying_power"),
                 vix=vix, market_open=market_open,
-                cash=account_info.get("cash"),
+                # Net of short market value: short-sale proceeds are collateral,
+                # not sweepable cash (smv is negative or 0)
+                cash=(
+                    float(account.get("cash", 0) or 0)
+                    + float(account.get("short_market_value", 0) or 0)
+                ),
             )
         except Exception as e:
             logger.error(f"Alpaca connection error: {e}")
@@ -1489,10 +1649,13 @@ def run_paper_trade_pipeline(config: dict) -> dict:
         logger.warning("ALPACA_API_KEY not set — screening only, no paper trades placed")
         risk_snapshot = {}
 
-    buys  = sum(1 for o in orders if o["side"] == "buy")
-    sells = sum(1 for o in orders if o["side"] == "sell")
+    buys   = sum(1 for o in orders if o["side"] == "buy")
+    sells  = sum(1 for o in orders if o["side"] == "sell")
+    shorts = sum(1 for o in orders if o["side"] == "short")
+    covers = sum(1 for o in orders if o["side"] == "cover")
     logger.info(
         f"=== Paper Trade complete: {buys} buys  {sells} sells  "
+        f"{shorts} shorts  {covers} covers  "
         f"{len(promoted)} promoted  {len(pruned)} pruned ==="
     )
 

@@ -292,6 +292,114 @@ def test_core_does_not_consume_max_positions_slot():
     assert any(o["ticker"] == "AAA" and o["side"] == "buy" for o in orders)
 
 
+# ── Short overlay ─────────────────────────────────────────────────────────────
+
+def _short_cfg(**over):
+    return _permissive_cfg(
+        short_pos_pct=0.04, short_max_total_pct=0.12, **over
+    )
+
+
+def test_short_opens_on_robust_sell():
+    results = [{"ticker": "AAA", "robust_signal": "SELL", "signal": "SELL",
+                "ir": -2.0, "t_alpha": -3.0}]
+    orders = generate_orders(
+        results, positions={}, equity=100_000, price_data={"AAA": FakePD(100.0)},
+        max_pos_pct=0.15, dry_run=True, risk=_ok_risk(),
+        paper_cfg=_short_cfg(), buying_power=100_000, market_open=True,
+        cash=100_000,
+    )
+    shorts = [o for o in orders if o["side"] == "short"]
+    assert len(shorts) == 1
+    o = shorts[0]
+    assert o["ticker"] == "AAA"
+    assert o["qty"] == 40                       # 4% × 100k / $100, whole shares
+    assert float(o["qty"]) == int(o["qty"])
+
+
+def test_short_capped_by_gross_exposure():
+    # Existing short worth 12% of equity → cap reached, no new short.
+    results = [{"ticker": "BBB", "robust_signal": "SELL", "signal": "SELL",
+                "ir": -2.0, "t_alpha": -3.0}]
+    positions = {"AAA": {"qty": "-120", "market_value": "-12000",
+                         "unrealized_plpc": "0.0"}}
+    orders = generate_orders(
+        results, positions=positions, equity=100_000,
+        price_data={"AAA": FakePD(100.0), "BBB": FakePD(100.0)},
+        max_pos_pct=0.15, dry_run=True, risk=_ok_risk(),
+        paper_cfg=_short_cfg(), buying_power=100_000, market_open=True,
+        cash=100_000,
+    )
+    assert [o for o in orders if o["side"] == "short"] == []
+
+
+def test_short_disabled_by_default():
+    results = [{"ticker": "AAA", "robust_signal": "SELL", "signal": "SELL",
+                "ir": -2.0, "t_alpha": -3.0}]
+    orders = generate_orders(
+        results, positions={}, equity=100_000, price_data={"AAA": FakePD(100.0)},
+        max_pos_pct=0.15, dry_run=True, risk=_ok_risk(),
+        paper_cfg=_permissive_cfg(), buying_power=100_000, market_open=True,
+        cash=100_000,
+    )
+    assert [o for o in orders if o["side"] == "short"] == []
+
+
+def test_cover_when_signal_fades():
+    results = [{"ticker": "AAA", "robust_signal": "HOLD", "signal": "HOLD",
+                "ir": 0.1, "t_alpha": 0.2}]
+    positions = {"AAA": {"qty": "-40", "market_value": "-4000",
+                         "unrealized_plpc": "0.03"}}
+    orders = generate_orders(
+        results, positions=positions, equity=100_000,
+        price_data={"AAA": FakePD(100.0)},
+        max_pos_pct=0.15, dry_run=True, risk=_ok_risk(),
+        paper_cfg=_short_cfg(), buying_power=100_000, market_open=True,
+        cash=100_000,
+    )
+    covers = [o for o in orders if o["side"] == "cover"]
+    assert len(covers) == 1 and covers[0]["ticker"] == "AAA"
+    assert covers[0]["qty"] == pytest.approx(40)
+
+
+def test_short_held_while_signal_persists_and_stop_loss_covers():
+    # Signal still SELL → no cover. But a short 20% underwater trips stop-loss.
+    results = [{"ticker": "AAA", "robust_signal": "SELL", "signal": "SELL",
+                "ir": -2.0, "t_alpha": -3.0}]
+    positions = {"AAA": {"qty": "-40", "market_value": "-4800",
+                         "unrealized_plpc": "-0.20"}}
+    orders = generate_orders(
+        results, positions=positions, equity=100_000,
+        price_data={"AAA": FakePD(120.0)},
+        max_pos_pct=0.15, dry_run=True, risk=_ok_risk(),
+        paper_cfg=_short_cfg(stop_loss_pct=0.15), buying_power=100_000,
+        market_open=True, cash=100_000,
+    )
+    covers = [o for o in orders if o["side"] == "cover"]
+    assert len(covers) == 1
+    assert "STOP-LOSS" in covers[0]["reason"]
+    assert covers[0]["qty"] == 40               # abs, whole
+    # No long "sell" close of the short, and no re-short of a held name
+    assert [o for o in orders if o["side"] in ("sell", "short")] == []
+
+
+def test_short_proceeds_do_not_inflate_core_sweep():
+    # Cash 10k (net of shorts), one new short opens — sweep must still be
+    # 10k − 2% buffer, not 10k + short proceeds.
+    results = [{"ticker": "AAA", "robust_signal": "SELL", "signal": "SELL",
+                "ir": -2.0, "t_alpha": -3.0}]
+    orders = generate_orders(
+        results, positions={}, equity=100_000,
+        price_data={"AAA": FakePD(100.0), "SPY": FakePD(500.0)},
+        max_pos_pct=0.15, dry_run=True, risk=_ok_risk(),
+        paper_cfg=_short_cfg(core_parking_ticker="SPY", core_cash_buffer_pct=0.02),
+        buying_power=100_000, market_open=True, cash=10_000,
+    )
+    sweeps = [o for o in orders if o["side"] == "buy" and o["ticker"] == "SPY"]
+    assert len(sweeps) == 1
+    assert sweeps[0]["value_usd"] == pytest.approx(8_000, rel=1e-3)
+
+
 # ── Performance metrics ───────────────────────────────────────────────────────
 
 def test_performance_empty_history():

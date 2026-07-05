@@ -69,7 +69,8 @@ paper_trade:
   max_drawdown_halt: 0.10  # halt new buys if equity fell > 10% from starting_equity
   starting_equity: 100000  # Alpaca paper account starting equity (USD)
   stop_loss_pct: 0.15      # close any position whose unrealised loss exceeds 15%
-  trailing_stop_pct: 0.15  # close if price falls >15% from the position's all-time high
+  trailing_stop_pct: 0.20  # close if price falls >20% from the position's all-time high
+                           # (0.15 whipsawed out of every eventual winner in the 2024-26 event study)
   rebalance_threshold: 0.05 # trim/top-up held BUY positions when weight drifts > 5%
   cgt_rate: 0.33            # Irish CGT rate; inflates effective trim threshold on winners
   vix_halt_threshold: 25    # halt new buys when VIX closes above this level
@@ -77,3 +78,6 @@ paper_trade:
   # ── Core parking: keep idle cash invested in a broad-market ETF ────────────
   core_parking_ticker: SPY  # sweep idle cash here; sold to fund signal BUYs; "" disables
   core_cash_buffer_pct: 0.02 # equity fraction kept as cash (fee/slippage headroom)
+  # ── Short overlay: open shorts on robust SELL signals ──────────────────────
+  short_pos_pct: 0.04       # equity fraction per short position (whole shares only)
+  short_max_total_pct: 0.12 # cap on gross short exposure; 0 disables shorting

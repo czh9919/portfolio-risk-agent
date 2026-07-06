@@ -235,7 +235,7 @@ def run_correlation_breakdown(price_data: dict, holdings: list[dict],
 
     corr_df  = rolling_correlation(price_data, holdings)
     if corr_df is not None:
-        normal_corr = corr_df.reindex(index=tickers, columns=tickers).fillna(0).values
+        normal_corr = np.array(corr_df.reindex(index=tickers, columns=tickers).fillna(0).values, dtype=float)
         np.fill_diagonal(normal_corr, 1.0)
     else:
         normal_corr = np.eye(len(tickers))

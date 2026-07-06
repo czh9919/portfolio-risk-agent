@@ -242,7 +242,7 @@ def portfolio_sigma(price_data: dict, holdings: list[dict],
     sigma_vec = np.sqrt(var_vec)
 
     if corr_df is not None:
-        corr = corr_df.reindex(index=tickers, columns=tickers).fillna(0).values
+        corr = np.array(corr_df.reindex(index=tickers, columns=tickers).fillna(0).values, dtype=float)
         np.fill_diagonal(corr, 1.0)
     else:
         corr = np.eye(len(tickers))

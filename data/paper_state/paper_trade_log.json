@@ -28,5 +28,25 @@
     "value_usd": 2590.9799194335938,
     "reason": "TRAILING STOP  16.1% below high $1029.15",
     "equity": 100228.9
+  },
+  {
+    "timestamp": "2026-07-13T22:46:37Z",
+    "ticker": "QQQ",
+    "side": "buy",
+    "qty": 31.300669,
+    "price_est": 711.739990234375,
+    "value_usd": 22277.937848389403,
+    "reason": "CORE SWEEP  $22,278 \u2192 QQQ  (40% of $55,695, buffer 2%)",
+    "equity": 100943.23
+  },
+  {
+    "timestamp": "2026-07-13T22:46:37Z",
+    "ticker": "SPY",
+    "side": "buy",
+    "qty": 44.60524,
+    "price_est": 749.1699829101562,
+    "value_usd": 33416.90688850342,
+    "reason": "CORE SWEEP  $33,417 \u2192 SPY  (60% of $55,695, buffer 2%)",
+    "equity": 100943.23
   }
 ]

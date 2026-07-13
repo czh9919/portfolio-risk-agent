@@ -75,8 +75,13 @@ paper_trade:
   cgt_rate: 0.33            # Irish CGT rate; inflates effective trim threshold on winners
   vix_halt_threshold: 25    # halt new buys when VIX closes above this level
   earnings_avoid_days: 3    # skip opening new position if earnings within this many days
-  # ── Core parking: keep idle cash invested in a broad-market ETF ────────────
-  core_parking_ticker: SPY  # sweep idle cash here; sold to fund signal BUYs; "" disables
+  # ── Core parking: keep idle cash invested in a broad-market ETF mix ────────
+  # Weights normalise to 1.0; sold proportionally to fund signal BUYs; exempt
+  # from signal trading, caps, stops, and max_positions. Empty dict disables.
+  # Legacy scalar `core_parking_ticker: SPY` is still accepted (= {SPY: 1.0}).
+  core_parking_tickers:
+    SPY: 0.60             # broad S&P 500 base
+    QQQ: 0.40             # Nasdaq-100 growth tilt
   core_cash_buffer_pct: 0.02 # equity fraction kept as cash (fee/slippage headroom)
   # ── Short overlay: open shorts on robust SELL signals ──────────────────────
   short_pos_pct: 0.04       # equity fraction per short position (whole shares only)

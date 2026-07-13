@@ -98,7 +98,7 @@ Report + Email (notify.report_gen, notify.mailer)
 - `ic_analysis.py`: Cross-sectional Information Coefficient; 8 rolling evaluation periods
 - `factor_ortho.py`: Collinearity diagnostics (VIF, condition number, high-corr pairs)
 - `weight_allocator.py`: Signal-weighted allocation; capped 20% per position; portfolio factor exposure warnings
-- `paper_engine.py`: Paper-trading pipeline — universe expansion (watchlist + seeded random S&P 500 fill), FF5 screening, watchlist promotion/pruning, risk gates (max positions, VaR, beta, drawdown halt, VIX), stop-loss + trailing stop, CGT-aware rebalancing, IR-proportional sizing, core SPY parking (idle cash swept into ETF, sold to fund signal BUYs), short overlay (whole-share shorts on robust SELL signals, per-name + gross exposure caps, covered on signal fade or stop-loss; short proceeds treated as collateral, not sweepable cash), NAV/trade-log persistence, bilingual email summary
+- `paper_engine.py`: Paper-trading pipeline — universe expansion (watchlist + seeded random S&P 500 fill), FF5 screening, watchlist promotion/pruning, risk gates (max positions, VaR, beta, drawdown halt, VIX), stop-loss + trailing stop, CGT-aware rebalancing, IR-proportional sizing, core ETF parking (idle cash swept into a weighted mix e.g. SPY/QQQ, sold proportionally to fund signal BUYs; sweeps fire even when market is closed — Alpaca queues day-tif orders for the next open), short overlay (whole-share shorts on robust SELL signals, per-name + gross exposure caps, covered on signal fade or stop-loss; short proceeds treated as collateral, not sweepable cash), NAV/trade-log persistence, bilingual email summary
 
 **`brokers/`** – Trading APIs:
 - `alpaca.py`: Alpaca paper-trading REST client (account, positions, market/fractional orders, cancel-all, market clock). `is_market_open()` fails OPEN on clock-API errors
@@ -166,7 +166,7 @@ Report + Email (notify.report_gen, notify.mailer)
 
 ### YAML Config Files
 
-- **`config/settings.yaml`**: History window (730d), FF5 window (252d), MC paths (50K), model selection, `paper_trade:` block (universe size, risk-gate limits, stop-loss/trailing-stop, rebalance threshold, CGT rate, VIX halt, earnings-avoid window, core parking: idle cash swept into `core_parking_ticker` ETF, sold to fund signal BUYs, exempt from caps/stops/signal trading; short overlay: `short_pos_pct` per name / `short_max_total_pct` gross cap, 0 disables)
+- **`config/settings.yaml`**: History window (730d), FF5 window (252d), MC paths (50K), model selection, `paper_trade:` block (universe size, risk-gate limits, stop-loss/trailing-stop, rebalance threshold, CGT rate, VIX halt, earnings-avoid window, core parking: idle cash swept into a weighted mix via `core_parking_tickers` (e.g. `{SPY: 0.6, QQQ: 0.4}`; legacy scalar `core_parking_ticker` also accepted), sold proportionally to fund signal BUYs, exempt from caps/stops/signal trading; short overlay: `short_pos_pct` per name / `short_max_total_pct` gross cap, 0 disables)
 - **`config/thresholds.yaml`**: Per-metric alert thresholds, severity, bilingual labels; `amber_ratio` (default 0.8) — metric within 80–100% of its threshold shows AMBER in reports; only RED (actual breach) fires alert emails
 - **`config/volatility.yaml`**: EWMA λ (0.94), GARCH params, ECB rate (3.5%), window sizes
 - **`config/watchlist.csv`**: Tickers (equity/bond/gold), asset_class, currency — edit and commit; takes effect on next run

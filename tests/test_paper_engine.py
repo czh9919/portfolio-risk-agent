@@ -214,6 +214,13 @@ def _core_cfg(**over):
     )
 
 
+def _core_mix_cfg(**over):
+    return _permissive_cfg(
+        core_parking_tickers={"SPY": 0.60, "QQQ": 0.40},
+        core_cash_buffer_pct=0.02, **over,
+    )
+
+
 def test_core_sweep_buys_spy_with_idle_cash():
     orders = generate_orders(
         [], positions={}, equity=100_000, price_data={"SPY": FakePD(500.0)},
@@ -228,14 +235,69 @@ def test_core_sweep_buys_spy_with_idle_cash():
     assert o["value_usd"] == pytest.approx(98_000, rel=1e-3)
 
 
-def test_core_sweep_blocked_by_gates_and_closed_market():
-    for kw in ({"vix": 30, "market_open": True}, {"market_open": False}):
-        orders = generate_orders(
-            [], positions={}, equity=100_000, price_data={"SPY": FakePD(500.0)},
-            max_pos_pct=0.15, dry_run=True, risk=_ok_risk(),
-            paper_cfg=_core_cfg(), buying_power=100_000, cash=100_000, **kw,
-        )
-        assert orders == []
+def test_core_sweep_blocked_by_vix_gate():
+    # VIX halt gate must block sweep regardless of market state
+    orders = generate_orders(
+        [], positions={}, equity=100_000, price_data={"SPY": FakePD(500.0)},
+        max_pos_pct=0.15, dry_run=True, risk=_ok_risk(),
+        paper_cfg=_core_cfg(), buying_power=100_000, cash=100_000,
+        vix=30, market_open=True,
+    )
+    assert orders == []
+
+
+def test_core_sweep_fires_when_market_closed_and_gates_pass():
+    # After-hours cron: market closed but risk gates OK → sweep still queues
+    # (Alpaca fills day-tif orders on the next open)
+    orders = generate_orders(
+        [], positions={}, equity=100_000, price_data={"SPY": FakePD(500.0)},
+        max_pos_pct=0.15, dry_run=True, risk=_ok_risk(),
+        paper_cfg=_core_cfg(), buying_power=100_000, cash=100_000,
+        market_open=False,
+    )
+    assert len(orders) == 1
+    assert orders[0]["ticker"] == "SPY" and orders[0]["side"] == "buy"
+
+
+def test_core_sweep_splits_across_spy_and_qqq_by_weight():
+    orders = generate_orders(
+        [], positions={}, equity=100_000,
+        price_data={"SPY": FakePD(500.0), "QQQ": FakePD(400.0)},
+        max_pos_pct=0.15, dry_run=True, risk=_ok_risk(),
+        paper_cfg=_core_mix_cfg(), buying_power=100_000, market_open=True,
+        cash=100_000,
+    )
+    # 98k swept: 58.8k SPY + 39.2k QQQ
+    by_ticker = {o["ticker"]: o for o in orders if o["side"] == "buy"}
+    assert set(by_ticker) == {"SPY", "QQQ"}
+    assert by_ticker["SPY"]["value_usd"] == pytest.approx(58_800, rel=1e-3)
+    assert by_ticker["QQQ"]["value_usd"] == pytest.approx(39_200, rel=1e-3)
+
+
+def test_core_funding_pulls_proportionally_from_mix():
+    # Cash 1k, SPY 60k + QQQ 40k parked, one BUY signal wants 15k → the mix
+    # must fund shortfall (16k) 60/40 across the two names.
+    results = [{"ticker": "AAA", "robust_signal": "BUY", "signal": "BUY",
+                "ir": 2.0, "t_alpha": 3.0}]
+    positions = {
+        "SPY": {"qty": "120", "market_value": "60000", "unrealized_plpc": "0.05"},
+        "QQQ": {"qty": "100", "market_value": "40000", "unrealized_plpc": "0.05"},
+    }
+    orders = generate_orders(
+        results, positions=positions, equity=100_000,
+        price_data={"AAA": FakePD(100.0), "SPY": FakePD(500.0),
+                    "QQQ": FakePD(400.0)},
+        max_pos_pct=0.15, dry_run=True, risk=_ok_risk(),
+        paper_cfg=_core_mix_cfg(), buying_power=2_000, market_open=True,
+        cash=1_000,
+    )
+    core_sells = {o["ticker"]: o for o in orders
+                  if o["side"] == "sell" and o["ticker"] in {"SPY", "QQQ"}}
+    assert set(core_sells) == {"SPY", "QQQ"}
+    # 16k shortfall × 60/40 mix
+    assert core_sells["SPY"]["value_usd"] == pytest.approx(9_600, rel=1e-3)
+    assert core_sells["QQQ"]["value_usd"] == pytest.approx(6_400, rel=1e-3)
+    assert any(o["ticker"] == "AAA" and o["side"] == "buy" for o in orders)
 
 
 def test_core_funding_sell_covers_new_buy():

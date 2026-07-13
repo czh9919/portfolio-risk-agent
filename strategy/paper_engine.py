@@ -993,12 +993,15 @@ def generate_orders(
       • Equity drawdown > halt threshold
     SELL / close orders always execute regardless of gates.
 
-    Core parking (paper_cfg["core_parking_ticker"], e.g. SPY):
-      Idle cash above core_cash_buffer_pct is swept into the core ETF at the
-      end of each run, and the core is sold to fund new signal BUYs. The core
-      is exempt from signal trading, per-position caps, rebalancing, and
-      stop-losses — market-level de-risking is governed by the VIX/drawdown
-      gates (which stop new sweeps but never force-liquidate the core).
+    Core parking (paper_cfg["core_parking_tickers"], e.g. {SPY: 0.6, QQQ: 0.4}):
+      Idle cash above core_cash_buffer_pct is swept across the core ETF mix at
+      each run (weighted proportionally), and the core is sold to fund new
+      signal BUYs. Cores are exempt from signal trading, per-position caps,
+      rebalancing, and stop-losses — market-level de-risking is governed by
+      the VIX/drawdown gates (which stop new sweeps but never force-liquidate
+      the core). Sweeps also fire when the market is closed: Alpaca queues
+      the day-tif orders for the next open. Back-compat: an old-style scalar
+      `core_parking_ticker` is still accepted and treated as 100 % weight.
 
     Short overlay (paper_cfg["short_max_total_pct"] > 0):
       Robust SELL signals on non-held names open whole-share shorts of
@@ -1011,8 +1014,9 @@ def generate_orders(
     """
     from brokers.alpaca import place_order, close_position
 
-    core_ticker = str((paper_cfg or {}).get("core_parking_ticker", "") or "").upper()
-    core_buffer = float((paper_cfg or {}).get("core_cash_buffer_pct", 0.02))
+    core_weights = _get_core_weights(paper_cfg)
+    core_tickers = set(core_weights)
+    core_buffer  = float((paper_cfg or {}).get("core_cash_buffer_pct", 0.02))
     short_pos_pct   = float((paper_cfg or {}).get("short_pos_pct", 0.04))
     short_max_total = float((paper_cfg or {}).get("short_max_total_pct", 0.0))
 
@@ -1030,12 +1034,12 @@ def generate_orders(
     # The core parking ETF never trades on its own FF5 signal.
     buy_signals  = [
         r for r in results
-        if r.get("robust_signal") == "BUY" and r["ticker"] != core_ticker
+        if r.get("robust_signal") == "BUY" and r["ticker"] not in core_tickers
     ]
     sell_signals = [
         r for r in results
         if (r.get("signal") == "SELL" or r.get("robust_signal") == "SELL")
-        and r["ticker"] != core_ticker
+        and r["ticker"] not in core_tickers
     ]
     orders: list[dict] = []
     exiting: set = set()   # tickers already queued for close (sell signal or stop-loss)
@@ -1092,7 +1096,7 @@ def generate_orders(
     stop_loss_pct = float((paper_cfg or {}).get("stop_loss_pct", 0.0))
     if stop_loss_pct > 0:
         for ticker, pos in positions.items():
-            if ticker in exiting or ticker == core_ticker:
+            if ticker in exiting or ticker in core_tickers:
                 continue
             try:
                 plpc = float(pos.get("unrealized_plpc") or 0.0)
@@ -1124,7 +1128,7 @@ def generate_orders(
     if trailing_pct > 0:
         watermarks = _load_watermarks()
         for ticker, pos in positions.items():
-            if ticker in exiting or ticker == core_ticker or ticker in short_held:
+            if ticker in exiting or ticker in core_tickers or ticker in short_held:
                 continue
             pd_obj = price_data.get(ticker)
             if pd_obj is None or pd_obj.closes is None or pd_obj.closes.empty:
@@ -1160,20 +1164,24 @@ def generate_orders(
         watermarks = {t: wm for t, wm in watermarks.items() if t in held}
         _save_watermarks(watermarks)
 
-    # ── Risk gates — evaluated once before any new BUY ────────────────────────
-    allow_buys = True
-    if not market_open:
-        allow_buys = False
-        logger.info("Paper: BUY orders skipped — market closed")
-    elif risk is not None and paper_cfg is not None:
+    # ── Risk gates — always evaluated so sweeps can fire when market's closed ─
+    gates_pass = True
+    if risk is not None and paper_cfg is not None:
         gate_risk = risk
-        if core_ticker and core_ticker in positions and risk.get("n_positions", 0) > 0:
-            # The parking ETF is cash-equivalent, not an alpha bet — it must
-            # not consume a max_positions slot.
-            gate_risk = {**risk, "n_positions": risk["n_positions"] - 1}
-        allow_buys, gate_reason = _risk_gates(gate_risk, paper_cfg, equity, vix=vix)
-        if not allow_buys:
-            logger.warning(f"Paper: BUY orders blocked — {gate_reason}")
+        n_core_held = sum(1 for t in core_tickers if t in positions)
+        if n_core_held and risk.get("n_positions", 0) > 0:
+            # The parking ETFs are cash-equivalent, not an alpha bet — they
+            # must not consume max_positions slots.
+            gate_risk = {**risk, "n_positions": risk["n_positions"] - n_core_held}
+        gates_pass, gate_reason = _risk_gates(gate_risk, paper_cfg, equity, vix=vix)
+        if not gates_pass:
+            logger.warning(f"Paper: new activity blocked — {gate_reason}")
+    # New BUYs / shorts need the market open; sweeps just need gates to pass
+    # (Alpaca queues day-tif orders placed after close for the next session).
+    allow_buys  = gates_pass and market_open
+    allow_sweep = gates_pass
+    if gates_pass and not market_open:
+        logger.info("Paper: market closed — new BUYs/shorts skipped, sweep will queue for open")
 
     # Budget shared between rebalance top-ups and new buys
     budget       = float(buying_power) if buying_power is not None else equity
@@ -1211,11 +1219,19 @@ def generate_orders(
             gates_allow_buys=allow_buys,
             remaining_bp=remaining_bp,
             dry_run=dry_run,
-            exiting=exiting | short_held | ({core_ticker} if core_ticker else set()),
+            exiting=exiting | short_held | core_tickers,
         )
         orders.extend(rebal_orders)
 
+    def _maybe_sweep() -> None:
+        if allow_sweep:
+            _core_sweep(
+                core_weights, core_buffer, cash_avail + _planned_cash_delta(),
+                orders, positions, price_data, equity, dry_run,
+            )
+
     if not allow_buys:
+        _maybe_sweep()
         return orders
 
     # ── IR-proportional sizing for new BUY positions ──────────────────────────
@@ -1223,12 +1239,9 @@ def generate_orders(
     if not new_buys:
         remaining_bp = _open_short_orders(
             results, positions, exiting, orders, price_data, equity,
-            paper_cfg, remaining_bp, dry_run, core_ticker, short_held,
+            paper_cfg, remaining_bp, dry_run, core_tickers, short_held,
         )
-        _core_sweep(
-            core_ticker, core_buffer, cash_avail + _planned_cash_delta(),
-            orders, positions, price_data, equity, dry_run,
-        )
+        _maybe_sweep()
         return orders
 
     earnings_avoid_days = int((paper_cfg or {}).get("earnings_avoid_days", 0))
@@ -1256,43 +1269,56 @@ def generate_orders(
     alloc_w = np.minimum(raw_w, max_pos_pct)        # cap each at max_pos_pct
     # Do NOT renormalise: if total < 1 that's intentional (leaves cash buffer)
 
-    # ── Fund new BUYs from the core parking position when cash is short ───────
-    core_pos = positions.get(core_ticker) if core_ticker else None
-    if core_pos is not None:
+    # ── Fund new BUYs from the core parking positions when cash is short ──────
+    # Sell proportionally to each core's current MV so the target weights stay
+    # roughly in balance after funding. Bounded by each ticker's MV.
+    core_holdings: list[tuple[str, dict, float, float]] = []
+    for t in sorted(core_tickers):
+        pos = positions.get(t)
+        if pos is None:
+            continue
+        pd_obj = price_data.get(t)
+        px = (float(pd_obj.closes.iloc[-1])
+              if pd_obj is not None and pd_obj.closes is not None
+              and not pd_obj.closes.empty else 0.0)
+        try:
+            mv = float(pos.get("market_value") or 0.0)
+        except (TypeError, ValueError):
+            mv = 0.0
+        if mv > 0 and px > 0:
+            core_holdings.append((t, pos, px, mv))
+
+    total_core_mv = sum(mv for _, _, _, mv in core_holdings)
+    if core_holdings and total_core_mv > 0:
         intended  = float(equity * alloc_w.sum())
         cash_now  = cash_avail + _planned_cash_delta()
         shortfall = intended + core_buffer * equity - cash_now
-        core_pd   = price_data.get(core_ticker)
-        core_px   = (float(core_pd.closes.iloc[-1])
-                     if core_pd is not None and core_pd.closes is not None
-                     and not core_pd.closes.empty else 0.0)
-        try:
-            core_mv = float(core_pos.get("market_value") or 0.0)
-        except (TypeError, ValueError):
-            core_mv = 0.0
-        if shortfall > 0 and core_mv > 0 and core_px > 0:
-            fund_val = min(shortfall, core_mv)
-            fund_qty = round(fund_val / core_px, 6)
-            if fund_qty >= 0.001:
+        fund_needed = min(shortfall, total_core_mv)
+        if fund_needed > 0:
+            for t, _pos, px, mv in core_holdings:
+                fund_val = min(fund_needed * (mv / total_core_mv), mv)
+                fund_qty = round(fund_val / px, 6)
+                if fund_qty < 0.001:
+                    continue
                 remaining_bp += fund_val
                 orders.append({
-                    "ticker":    core_ticker, "side": "sell", "qty": fund_qty,
-                    "price_est": core_px,
-                    "value_usd": fund_qty * core_px,
+                    "ticker":    t, "side": "sell", "qty": fund_qty,
+                    "price_est": px,
+                    "value_usd": fund_qty * px,
                     "reason": (
-                        f"CORE FUNDING  sell parked {core_ticker} "
+                        f"CORE FUNDING  sell parked {t} "
                         f"${fund_val:,.0f} to fund signal BUYs"
                     ),
                 })
                 if not dry_run:
                     try:
-                        place_order(core_ticker, fund_qty, "sell")
+                        place_order(t, fund_qty, "sell")
                         logger.info(
-                            f"Paper: CORE FUNDING sold {fund_qty}x {core_ticker}"
+                            f"Paper: CORE FUNDING sold {fund_qty}x {t}"
                             f" (${fund_val:,.0f})"
                         )
                     except Exception as e:
-                        logger.warning(f"Paper: core funding sell failed — {e}")
+                        logger.warning(f"Paper: core funding sell {t} failed — {e}")
 
     for r, w in zip(new_buys, alloc_w):
         ticker = r["ticker"]
@@ -1358,12 +1384,9 @@ def generate_orders(
 
     remaining_bp = _open_short_orders(
         results, positions, exiting, orders, price_data, equity,
-        paper_cfg, remaining_bp, dry_run, core_ticker, short_held,
+        paper_cfg, remaining_bp, dry_run, core_tickers, short_held,
     )
-    _core_sweep(
-        core_ticker, core_buffer, cash_avail + _planned_cash_delta(),
-        orders, positions, price_data, equity, dry_run,
-    )
+    _maybe_sweep()
     return orders
 
 
@@ -1377,7 +1400,7 @@ def _open_short_orders(
     paper_cfg:    dict,
     remaining_bp: float,
     dry_run:      bool,
-    core_ticker:  str,
+    core_tickers: set,
     short_held:   set,
 ) -> float:
     """
@@ -1409,7 +1432,7 @@ def _open_short_orders(
     cand = [
         r for r in results
         if r.get("robust_signal") == "SELL"
-        and r["ticker"] != core_ticker
+        and r["ticker"] not in core_tickers
         and r["ticker"] not in positions
         and r["ticker"] not in exiting
     ]
@@ -1458,57 +1481,91 @@ def _open_short_orders(
 
 
 def _core_sweep(
-    core_ticker: str,
-    core_buffer: float,
-    cash_est:    float,
-    orders:      list[dict],
-    positions:   dict,
-    price_data:  dict,
-    equity:      float,
-    dry_run:     bool,
+    core_weights: dict,
+    core_buffer:  float,
+    cash_est:     float,
+    orders:       list[dict],
+    positions:    dict,
+    price_data:   dict,
+    equity:       float,
+    dry_run:      bool,
 ) -> None:
     """
     Sweep estimated post-trade idle cash (above the buffer) into the core
-    parking ETF. Appends the order to `orders` and executes unless dry_run.
-    Callers only invoke this when risk gates allow buys and the market is open.
+    parking ETF mix, allocating each ticker its configured weight. Appends
+    orders to `orders` and executes unless dry_run. Callers invoke this
+    whenever risk gates pass — including when the market is closed, in
+    which case Alpaca queues the day-tif orders for the next open.
     """
     from brokers.alpaca import place_order
 
-    if not core_ticker:
-        return
-    pd_obj = price_data.get(core_ticker)
-    if pd_obj is None or pd_obj.closes is None or pd_obj.closes.empty:
-        logger.warning(f"Paper: core sweep skipped — no price data for {core_ticker}")
-        return
-    price = float(pd_obj.closes.iloc[-1])
-    if price <= 0:
+    if not core_weights:
         return
 
     sweep_val = cash_est - core_buffer * equity
     # Minimum ticket avoids daily dust orders as NAV drifts around the buffer
     if sweep_val < max(100.0, 0.005 * equity):
         return
-    qty = round(sweep_val / price, 6)
-    if qty < 0.001:
-        return
 
-    orders.append({
-        "ticker":    core_ticker, "side": "buy", "qty": qty,
-        "price_est": price,
-        "value_usd": qty * price,
-        "reason": (
-            f"CORE SWEEP  idle cash ${sweep_val:,.0f} → {core_ticker}"
-            f"  (buffer {core_buffer*100:.0f}%)"
-        ),
-    })
-    if not dry_run:
-        try:
-            place_order(core_ticker, qty, "buy")
-            logger.info(
-                f"Paper: CORE SWEEP bought {qty}x {core_ticker} (${sweep_val:,.0f})"
-            )
-        except Exception as e:
-            logger.warning(f"Paper: core sweep buy failed — {e}")
+    for ticker, weight in sorted(core_weights.items()):
+        alloc = sweep_val * float(weight)
+        if alloc < 25.0:                # skip sub-ticket slivers per leg
+            continue
+        pd_obj = price_data.get(ticker)
+        if pd_obj is None or pd_obj.closes is None or pd_obj.closes.empty:
+            logger.warning(f"Paper: core sweep skipped — no price data for {ticker}")
+            continue
+        price = float(pd_obj.closes.iloc[-1])
+        if price <= 0:
+            continue
+        qty = round(alloc / price, 6)
+        if qty < 0.001:
+            continue
+
+        orders.append({
+            "ticker":    ticker, "side": "buy", "qty": qty,
+            "price_est": price,
+            "value_usd": qty * price,
+            "reason": (
+                f"CORE SWEEP  ${alloc:,.0f} → {ticker}"
+                f"  ({weight*100:.0f}% of ${sweep_val:,.0f}, buffer {core_buffer*100:.0f}%)"
+            ),
+        })
+        if not dry_run:
+            try:
+                place_order(ticker, qty, "buy")
+                logger.info(
+                    f"Paper: CORE SWEEP bought {qty}x {ticker} (${alloc:,.0f})"
+                )
+            except Exception as e:
+                logger.warning(f"Paper: core sweep buy {ticker} failed — {e}")
+
+
+def _get_core_weights(paper_cfg: dict | None) -> dict:
+    """
+    Normalise the core-parking config into `{ticker: weight}` (sums to 1.0).
+    Accepts `core_parking_tickers` (dict — preferred, e.g. {SPY: 0.6, QQQ: 0.4})
+    or falls back to the legacy scalar `core_parking_ticker` (treated as 100%).
+    Non-positive weights and empty/missing configs return `{}` (disabled).
+    """
+    cfg = paper_cfg or {}
+    raw = cfg.get("core_parking_tickers")
+    if isinstance(raw, dict) and raw:
+        weights = {}
+        for t, w in raw.items():
+            try:
+                w = float(w)
+            except (TypeError, ValueError):
+                continue
+            if w <= 0:
+                continue
+            weights[str(t).upper()] = w
+        total = sum(weights.values())
+        if total > 0:
+            return {t: w / total for t, w in weights.items()}
+        return {}
+    legacy = str(cfg.get("core_parking_ticker", "") or "").upper()
+    return {legacy: 1.0} if legacy else {}
 
 
 # ── Main pipeline ─────────────────────────────────────────────────────────────
@@ -1547,8 +1604,10 @@ def run_paper_trade_pipeline(config: dict) -> dict:
     permanent, candidates = expand_universe(target_size)
     all_tickers = permanent + candidates
 
-    # 2. Load prices (252-day window); include SPY for beta computation
-    fetch_tickers = list(set(all_tickers + ["SPY"]))
+    # 2. Load prices (252-day window); include SPY for beta computation and
+    # all configured core-parking tickers so the sweep/funding legs have prices
+    core_weights_cfg = _get_core_weights(paper_cfg)
+    fetch_tickers = list(set(all_tickers + ["SPY"] + list(core_weights_cfg)))
     logger.info(f"Loading {len(fetch_tickers)} tickers …")
     price_data = load_prices(fetch_tickers, days=ff_days)
 

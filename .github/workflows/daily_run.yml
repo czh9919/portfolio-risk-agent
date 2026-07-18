@@ -3,7 +3,6 @@ name: Daily Stock & Portfolio Analysis
 on:
   schedule:
     # All times UTC. ET = UTC-4 (EDT) / UTC-5 (EST). Dublin = UTC+0/+1.
-    - cron: '0 14 * * 1-5'   # 14:00 UTC → RUN_MODE=alert_check (09:00 ET pre-market)
     - cron: '45 13 * * 1-5'  # 13:45 UTC → RUN_MODE=paper_trade (09:45 ET, 15 min after open)
     - cron: '30 21 * * 1-5'  # 21:30 UTC → RUN_MODE=full (16:30 ET after close)
   workflow_dispatch:
@@ -61,22 +60,20 @@ jobs:
           restore-keys: |
             persist-${{ runner.os }}-
 
-      - name: Resolve run mode from schedule time
+      - name: Resolve run mode from schedule
         id: mode
+        # Prefer github.event.schedule (exact cron string that fired) so a delayed
+        # 13:45 UTC trigger arriving at 14:xx UTC still resolves to paper_trade
+        # instead of falling through to full mode.
         run: |
           INPUT_MODE="${{ github.event.inputs.run_mode }}"
+          SCHED="${{ github.event.schedule }}"
           if [ -n "$INPUT_MODE" ]; then
             echo "run_mode=$INPUT_MODE" >> $GITHUB_OUTPUT
+          elif [ "$SCHED" = "45 13 * * 1-5" ]; then
+            echo "run_mode=paper_trade" >> $GITHUB_OUTPUT
           else
-            HOUR=$(date -u +%H)
-            MIN=$(date -u +%M)
-            if [ "$HOUR" = "14" ]; then
-              echo "run_mode=alert_check" >> $GITHUB_OUTPUT
-            elif [ "$HOUR" = "13" ] && [ "$MIN" -ge 45 ]; then
-              echo "run_mode=paper_trade" >> $GITHUB_OUTPUT
-            else
-              echo "run_mode=full" >> $GITHUB_OUTPUT
-            fi
+            echo "run_mode=full" >> $GITHUB_OUTPUT
           fi
 
       - name: Run agent

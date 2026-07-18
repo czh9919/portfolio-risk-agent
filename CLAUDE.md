@@ -28,7 +28,7 @@ The system operates in **five distinct modes**, selected via RUN_MODE environmen
 |---|---|---|
 | full | 21:30 UTC (after US close) | Holdings → prices → FF5 factor ranking → portfolio risk → Monte Carlo → optimizer → report |
 | portfolio | Manual / local | Holdings → prices → portfolio risk only (skip watchlist ranking) |
-| alert_check | 14:00 UTC (pre-market) | Holdings → prices → threshold check only (fire RED alerts) |
+| alert_check | Manual only (folded into `full`, which calls the same threshold check post-close) | Holdings → prices → threshold check only (fire RED alerts) |
 | backtest | Manual | S&P 500 universe → walk-forward validation (FF5 μ vs historical μ) |
 | paper_trade | 22:00 UTC Mon–Fri | Universe expansion → FF5 screen → watchlist promote/prune → risk gates → Alpaca paper orders → state commit + email summary |
 
@@ -215,7 +215,7 @@ python test_pipeline.py   # import + smoke test
 ## GitHub Actions Workflows
 
 **`.github/workflows/daily_run.yml`**
-- Cron: 14:00 UTC (alert_check) & 21:30 UTC (full), Mon–Fri
+- Cron: 13:45 UTC (paper_trade) & 21:30 UTC (full), Mon–Fri. `full` also runs the RED-alert check, so a separate 14:00 UTC alert_check cron is not needed.
 - Manual dispatch: choose run mode
 - Restores `cache/` (alert dedup, FF5 pickle, SPY universe)
 - Installs optional deps (vectorbt, duckdb) and CJK fonts for matplotlib

@@ -78,5 +78,45 @@
     "value_usd": 15025.192157056641,
     "reason": "BUY signal  t=2.6  IR=2.91  alloc=15.0%",
     "equity": 100167.95
+  },
+  {
+    "timestamp": "2026-07-23T15:36:42Z",
+    "ticker": "GOOG",
+    "side": "sell",
+    "qty": 38,
+    "price_est": 317.25,
+    "value_usd": 12055.5,
+    "reason": "STOP-LOSS  unrealised P&L -17.1% < -15%",
+    "equity": 99143.5
+  },
+  {
+    "timestamp": "2026-07-23T15:36:42Z",
+    "ticker": "GOOGL",
+    "side": "sell",
+    "qty": 38,
+    "price_est": 317.4949951171875,
+    "value_usd": 12064.809814453125,
+    "reason": "STOP-LOSS  unrealised P&L -18.2% < -15%",
+    "equity": 99143.5
+  },
+  {
+    "timestamp": "2026-07-23T15:36:42Z",
+    "ticker": "QQQ",
+    "side": "buy",
+    "qty": 13.992235,
+    "price_est": 689.5850219726562,
+    "value_usd": 9648.83567992157,
+    "reason": "CORE SWEEP  $9,649 \u2192 QQQ  (40% of $24,122, buffer 2%)",
+    "equity": 99143.5
+  },
+  {
+    "timestamp": "2026-07-23T15:36:42Z",
+    "ticker": "SPY",
+    "side": "buy",
+    "qty": 19.64873,
+    "price_est": 736.5999755859375,
+    "value_usd": 14473.254038294677,
+    "reason": "CORE SWEEP  $14,473 \u2192 SPY  (60% of $24,122, buffer 2%)",
+    "equity": 99143.5
   }
 ]

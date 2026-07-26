@@ -9,6 +9,8 @@ RUN_MODE=market_brief → pre-market macro/news brief (Treasuries, DXY, VIX, cur
 RUN_MODE=heatmap      → post-close ETF heatmap (SPY/QQQ + 11 sector SPDRs, treemap + cards)
 RUN_MODE=compass      → post-close Bull-Bear Compass (6-factor regime score + 60d trend)
 RUN_MODE=macro_panel  → weekly Fed + macro dashboard (FRED indicators + FOMC futures)
+RUN_MODE=ai_panel     → daily AI sector deep-dive (leaders + valuation + insider + thermometer)
+RUN_MODE=flow_panel   → daily dark-pool (FINRA ATS) + congressional trades (House Clerk PTR)
 """
 import logging
 import os
@@ -449,10 +451,19 @@ if __name__ == "__main__":
         from notify.macro_panel import run_macro_panel_pipeline
         run_macro_panel_pipeline(cfg)
 
+    elif mode == "ai_panel":
+        from notify.ai_panel import run_ai_panel_pipeline
+        run_ai_panel_pipeline(cfg)
+
+    elif mode == "flow_panel":
+        from notify.flow_panel import run_flow_panel_pipeline
+        run_flow_panel_pipeline(cfg)
+
     else:
         logger.error(
             f"Unknown RUN_MODE: {mode!r}. Use: "
             "portfolio | full | alert_check | backtest | paper_trade | "
-            "market_brief | heatmap | compass | macro_panel"
+            "market_brief | heatmap | compass | macro_panel | ai_panel | "
+            "flow_panel"
         )
         sys.exit(1)

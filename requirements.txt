@@ -21,3 +21,4 @@ pytest>=8.0
 anthropic>=0.40
 feedparser>=6.0
 squarify>=0.4
+pdfplumber>=0.11

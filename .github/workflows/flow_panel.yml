@@ -1,0 +1,68 @@
+name: Flow Panel
+
+# Fires at 23:00 UTC Mon-Fri — 15 min after AI panel at 22:45. FINRA ATS
+# publishes weekly (2-week delay) so daily runs are wasteful data-wise, but
+# congressional PTRs are filed continuously and worth checking daily.
+#
+# Persistent cache/ptr_parsed/ is restored so we skip re-downloading and
+# re-parsing PDFs across runs.
+
+on:
+  schedule:
+    - cron: '0 23 * * 1-5'
+  workflow_dispatch:
+
+jobs:
+  flow-panel:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Install CJK fonts (matplotlib chart labels)
+        run: |
+          sudo apt-get install -y fonts-wqy-microhei
+          python -c "import matplotlib; import shutil; shutil.rmtree(matplotlib.get_cachedir(), ignore_errors=True)"
+
+      # Restore persistent cache — includes cache/ptr_parsed/ so PDFs
+      # already parsed on previous runs stay parsed.
+      - name: Restore persistent cache
+        uses: actions/cache@v4
+        with:
+          path: cache/
+          key: persist-${{ runner.os }}-${{ github.run_id }}
+          restore-keys: |
+            persist-${{ runner.os }}-
+
+      - name: Run flow panel
+        env:
+          RUN_MODE:            flow_panel
+          # LLM narrative
+          ANTHROPIC_API_KEY:   ${{ secrets.ANTHROPIC_API_KEY }}
+          # Email delivery
+          SMTP_HOST:           ${{ secrets.SMTP_HOST }}
+          SMTP_PORT:           ${{ secrets.SMTP_PORT }}
+          SMTP_USER:           ${{ secrets.SMTP_USER }}
+          SMTP_PASS:           ${{ secrets.SMTP_PASS }}
+          REPORT_TO_EMAIL:     ${{ secrets.REPORT_TO_EMAIL }}
+          RECIPIENT_EMAIL:     ${{ secrets.RECIPIENT_EMAIL }}
+        run: python main.py
+
+      - name: Save persistent cache
+        uses: actions/cache@v4
+        with:
+          path: cache/
+          key: persist-${{ runner.os }}-${{ github.run_id }}

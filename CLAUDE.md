@@ -18,7 +18,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 10. **Sends a post-close Market Heatmap** (RUN_MODE=heatmap) with SPY + QQQ + 11 GICS sector SPDRs. Fetches top-10 constituents per ETF via yfinance, embeds a finviz-style treemap PNG (boxes sized by ETF weight, coloured by 1-day return) plus one HTML card per ETF with 1D/1W/1M return, 52-week-high distance, and volume ratio.
 11. **Sends a post-close Bull-Bear Compass** (RUN_MODE=compass) — 6-factor market regime score (trend, breadth, volatility, credit, yield curve, momentum), weighted composite scaled to [-100, +100] with Bull/Neutral/Bear label. Persists to `data/compass_history/history.json` (rolling 180 days) so a 60-day trend chart can accompany each email, plus a Claude Sonnet 4.6 bilingual narrative.
 12. **Sends a weekly Macro Panel** (RUN_MODE=macro_panel) — 14 FRED series (employment, inflation, GDP, Fed policy, financial conditions, yield-curve spreads) plus market-implied FOMC path from 30-day Fed Funds futures (yfinance ZQ contracts, since CME FedWatch's official API is CDN-blocked). Delivers 5 embedded PNG charts + Sonnet 4.6 bilingual macro analysis.
-13. **Serves a FastAPI + Vue dashboard** (`api/` + `web/`) with JWT auth, WebSocket log streaming, and manual run triggers
+13. **Sends a daily AI Sector Panel** (RUN_MODE=ai_panel) — ~25 AI leaders grouped into chips/cloud/models/enterprise (from `config/ai_leaders.yaml`). Per-ticker daily/5D/1M price change + valuation snapshot (fwd PE, PEG, EV/EBITDA, market cap). Aggregated **AI Thermometer** (breadth + relative strength vs SPY + momentum + insider net-buy + volume, composited to 0-100). Full **insider trading table** from yfinance `.insider_transactions` (Form 4 aggregation): all buys/sells in the last 30 days across every leader, with insider name, title, action, shares, price, USD value, and date.
+14. **Sends a daily Flow Panel** (RUN_MODE=flow_panel) — dark-pool + congressional trades for the tracked universe (union of AI leaders + watchlist + committed holdings). Dark pool via FINRA ATS Transparency API (weekly per-ticker share volume + notional + venue MPID breakdown). Congressional trades via House Clerk `financial-pdfs/{year}FD.ZIP` metadata + per-filing PDF parsing (`pdfplumber` + regex for ticker/type/date/amount range). Both are official free sources — no paid subscription. Sonnet 4.6 analyses cross-signal patterns (e.g. Congress buying + dark-pool accumulation on same name).
+15. **Serves a FastAPI + Vue dashboard** (`api/` + `web/`) with JWT auth, WebSocket log streaming, and manual run triggers
 
 All **real-money** trading decisions remain manual. Paper trading is fully automated but uses simulated funds only.
 
@@ -26,7 +28,7 @@ All **real-money** trading decisions remain manual. Paper trading is fully autom
 
 ### Pipeline and Run Modes (main.py)
 
-The system operates in **nine distinct modes**, selected via RUN_MODE environment variable:
+The system operates in **eleven distinct modes**, selected via RUN_MODE environment variable:
 
 | Mode | Trigger | Pipeline |
 |---|---|---|
@@ -39,8 +41,10 @@ The system operates in **nine distinct modes**, selected via RUN_MODE environmen
 | heatmap | 22:15 UTC Mon–Fri (post-close) | yfinance ETF holdings (13 ETFs × top-10) → batch price metrics → squarify treemap PNG + per-ETF HTML cards (1D/1W/1M %, 52wH distance, volume ratio) → single email |
 | compass | 22:30 UTC Mon–Fri (post-close) | 6-factor scores (trend/breadth/vol/credit/curve/momentum) → weighted composite [-100, +100] → persist history → 60-day trend PNG → Sonnet 4.6 bilingual narrative → email |
 | macro_panel | 22:00 UTC Sunday (weekly, pre-Monday-open) | 14 FRED series (NFP, UNRATE, PCE, CPI, GDP, Fed policy, NFCI, curve spreads) + ZQ futures for FOMC path → 5 embedded PNG trend charts + Sonnet 4.6 macro analysis → email |
+| ai_panel | 22:45 UTC Mon–Fri (post-close) | ~25 AI leaders (chips/cloud/models/enterprise) → prices + valuation + 30d insider Form 4 → AI Thermometer (0-100) + 3 embedded charts + Sonnet 4.6 sector analysis → email |
+| flow_panel | 23:00 UTC Mon–Fri (post-close) | AI + watchlist + holdings universe → FINRA ATS dark-pool weekly + House Clerk PTR PDFs (pdfplumber parsed) → 2 embedded charts + full HTML tables + Sonnet 4.6 cross-signal analysis → email |
 
-Entry point: `python main.py` reads RUN_MODE, config files, and delegates to `run_portfolio_pipeline()`, `run_backtest_pipeline()`, `strategy.paper_engine.run_paper_trade_pipeline()`, `notify.market_brief.run_market_brief_pipeline()`, `notify.heatmap.run_heatmap_pipeline()`, `notify.compass.run_compass_pipeline()`, or `notify.macro_panel.run_macro_panel_pipeline()`.
+Entry point: `python main.py` reads RUN_MODE, config files, and delegates to `run_portfolio_pipeline()`, `run_backtest_pipeline()`, `strategy.paper_engine.run_paper_trade_pipeline()`, `notify.market_brief.run_market_brief_pipeline()`, `notify.heatmap.run_heatmap_pipeline()`, `notify.compass.run_compass_pipeline()`, `notify.macro_panel.run_macro_panel_pipeline()`, `notify.ai_panel.run_ai_panel_pipeline()`, or `notify.flow_panel.run_flow_panel_pipeline()`.
 
 ### Key Data Flow
 
@@ -134,6 +138,8 @@ Report + Email (notify.report_gen, notify.mailer)
 - `heatmap.py`: Post-close market heatmap — 13 ETFs (`SPY`, `QQQ`, sector SPDRs `XLK`/`XLF`/`XLE`/`XLV`/`XLY`/`XLP`/`XLI`/`XLB`/`XLRE`/`XLU`/`XLC`) → yfinance `funds_data.top_holdings` (top-10 + weight per ETF, per-ETF try/except) → batch price metrics (curr, 1D/1W/1M return, 52w-high distance, volume ratio) → squarify treemap PNG (boxes sized by ETF weight, coloured by 1-day return; falls back to HTML-only if matplotlib/squarify unavailable) → bilingual HTML email with per-ETF cards + treemap embedded via CID.
 - `compass.py`: Bull-Bear Compass — 6-factor regime score. Fetches SPY (trend + momentum), full S&P 500 constituents (breadth: % above 200SMA), `^VIX`/`^VIX9D` (level + term structure), `HYG`/`IEF` (credit spread proxy), `^TNX`/`^IRX` (yield curve), and `GC=F`/`HG=F` (Gold/Copper safe-haven proxy). Each factor scored to `[-1,+1]`, combined via `config/settings.yaml → compass.weights` into a composite `[-100,+100]` labelled Bull/Mildly Bullish/Neutral/Mildly Bearish/Bear. History persisted to `data/compass_history/history.json` (rolling 180 days, committed by CI so the 60-day trend chart survives ephemeral runners). Sonnet 4.6 writes a bilingual narrative citing the dominant factor and shift vs prior session.
 - `macro_panel.py`: Weekly Fed + macro dashboard. Pulls 14 FRED series via `pandas-datareader` (no API key): `PAYEMS`/`UNRATE`/`ICSA` (employment), `PCEPILFE`/`PCEPI`/`CPILFESL`/`CPIAUCSL` (inflation, transformed to YoY), `GDPC1` (transformed to QoQ SAAR), `DFEDTARU`/`DFEDTARL`/`FEDFUNDS` (Fed policy), `NFCI` (Chicago Fed financial conditions), `T10Y2Y`/`T10Y3M` (curve spreads). Attempts CME FedWatch unofficial JSON API for rate probabilities (usually CDN-blocked with 403 → falls back to deriving implied rates from 30-day Fed Funds futures — `yfinance` ZQ contracts, one per upcoming FOMC meeting; binary 25 bps prob model). Renders 5 PNG charts (employment, inflation, Fed path, NFCI, yield curve) all embedded via CID; Sonnet 4.6 provides bilingual analytical read of Fed stance + inflation trajectory + labour + financial-conditions regime.
+- `ai_panel.py`: Daily AI-sector deep-dive. Loads `config/ai_leaders.yaml` (grouped: chips/cloud/models/enterprise), batches yfinance for 60d OHLCV + per-ticker `.info` valuation ratios (fwd PE, PS, PEG, EV/EBITDA, market cap, margins, growth, beta) + `.insider_transactions` filtered to the last 30 days. Regex-parses the yfinance "Text" field for exact share price and classifies action (buy/sell/gift/grant/option). Computes an **AI Thermometer** (5 sub-scores: breadth 25%, relative strength vs SPY 25%, momentum 20%, insider net-buy 15%, volume vs 20d 15% → composite 0-100 with Cold/Cool/Neutral/Hot/Overheated label). Delivers 3 embedded PNG charts (thermometer gauge, valuation scatter, insider net-buy bar) + a full HTML insider-trade table + Sonnet 4.6 bilingual sector analysis.
+- `flow_panel.py`: Daily dark-pool + congressional-trade flow tracker. Universe = AI leaders + watchlist + committed holdings (union). **Dark pool** via FINRA ATS Transparency API (`api.finra.org/data/group/otcMarket/name/weeklySummary`, POST + JSON filter): per-ticker weekly share volume, notional, trade count, top MPIDs (UBS ATS / Morgan Stanley / etc.). **Congressional** via House Clerk (`disclosures-clerk.house.gov/public_disc/financial-pdfs/{year}FD.ZIP`): downloads current + prior year ZIP, parses XML for `FilingType='P'` PTR filings in the last 30 days, then per-filing downloads the PDF (`ptr-pdfs/{year}/{docid}.pdf`) and extracts asset/ticker/type/date/amount via `pdfplumber` + regex. Caches parsed results to `cache/ptr_parsed/{docid}.json` so subsequent runs skip re-parsing. 2 PNG charts (dark-pool notional bar, congressional net-buy bar) + Sonnet 4.6 bilingual cross-signal analysis.
 
 **`alert.py`** – Alert system:
 - Fires bilingual alert emails for RED metrics
@@ -257,6 +263,17 @@ python test_pipeline.py   # import + smoke test
 - Cron: 22:00 UTC Sunday (weekly, evening before Monday open)
 - Runs `RUN_MODE=macro_panel` — delivers `[Macro Panel]` email with 5 embedded PNG trend charts + FRED snapshot table + market-implied FOMC path + Sonnet 4.6 bilingual macro analysis
 - Requires SMTP secrets; `ANTHROPIC_API_KEY` optional (falls back to a numeric-only summary template). FRED and yfinance are keyless.
+
+**`.github/workflows/ai_panel.yml`**
+- Cron: 22:45 UTC Mon–Fri (15 min after compass at 22:30)
+- Runs `RUN_MODE=ai_panel` — delivers `[AI Panel]` email with the AI Thermometer, per-group sector heatmap tables, valuation scatter, insider net-buy bar, and full 30-day insider trade table
+- Requires SMTP secrets; `ANTHROPIC_API_KEY` optional (falls back to template summary). yfinance is keyless.
+
+**`.github/workflows/flow_panel.yml`**
+- Cron: 23:00 UTC Mon–Fri (15 min after AI panel at 22:45)
+- Runs `RUN_MODE=flow_panel` — delivers `[Flow Panel]` email with dark-pool weekly table + congressional PTR trade table for the tracked universe
+- Restores `cache/` so `cache/ptr_parsed/{docid}.json` PDF-parse cache survives across ephemeral runners
+- Requires SMTP secrets; `ANTHROPIC_API_KEY` optional (falls back to numeric summary). FINRA + House Clerk are official free sources — no data-vendor key needed.
 
 **`.github/workflows/ci.yml`**
 - Runs on push/PR to main or master

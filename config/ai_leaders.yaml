@@ -1,0 +1,24 @@
+# AI sector leaders monitored by RUN_MODE=ai_panel.
+# Loaded by notify/ai_panel.py. Edit and commit — takes effect on next run.
+# Grouped for the sector heatmap; the union is used everywhere else.
+
+groups:
+  chips_hardware:
+    label_en: "Chips & Hardware"
+    label_zh: "芯片与硬件"
+    tickers: [NVDA, AMD, AVGO, TSM, MU, ASML, ARM, INTC, SMCI, MRVL]
+
+  cloud_infra:
+    label_en: "Cloud & Infrastructure"
+    label_zh: "云计算与基础设施"
+    tickers: [MSFT, GOOGL, AMZN, ORCL, IBM]
+
+  models_apps:
+    label_en: "Models & Applications"
+    label_zh: "模型与应用"
+    tickers: [META, CRM, ADBE, NOW, SNOW]
+
+  enterprise_ai:
+    label_en: "Enterprise AI"
+    label_zh: "企业级 AI"
+    tickers: [PLTR, AI, PATH, MDB, DDOG]

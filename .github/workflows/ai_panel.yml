@@ -1,0 +1,51 @@
+name: AI Sector Panel
+
+# Fires at 22:45 UTC Mon-Fri — 15 min after compass at 22:30, so all
+# yfinance-based post-close jobs stay staggered.
+#
+# Delivers a daily deep-dive on the AI sector: leader prices, valuation
+# snapshot, 30-day insider Form 4 filings, and an AI Thermometer.
+
+on:
+  schedule:
+    - cron: '45 22 * * 1-5'
+  workflow_dispatch:
+
+jobs:
+  ai-panel:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Install CJK fonts (matplotlib chart labels)
+        run: |
+          sudo apt-get install -y fonts-wqy-microhei
+          python -c "import matplotlib; import shutil; shutil.rmtree(matplotlib.get_cachedir(), ignore_errors=True)"
+
+      - name: Run AI panel
+        env:
+          RUN_MODE:            ai_panel
+          # LLM narrative (falls back to template if unset)
+          ANTHROPIC_API_KEY:   ${{ secrets.ANTHROPIC_API_KEY }}
+          # Email delivery
+          SMTP_HOST:           ${{ secrets.SMTP_HOST }}
+          SMTP_PORT:           ${{ secrets.SMTP_PORT }}
+          SMTP_USER:           ${{ secrets.SMTP_USER }}
+          SMTP_PASS:           ${{ secrets.SMTP_PASS }}
+          REPORT_TO_EMAIL:     ${{ secrets.REPORT_TO_EMAIL }}
+          RECIPIENT_EMAIL:     ${{ secrets.RECIPIENT_EMAIL }}
+        run: python main.py

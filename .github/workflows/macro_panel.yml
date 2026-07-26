@@ -1,0 +1,49 @@
+name: Macro Panel
+
+# Fires Sunday 22:00 UTC — evening reading the night before Monday open.
+# Weekly cadence matches the monthly release schedule of most FRED series
+# (NFP first Friday, CPI/PCE mid-month, GDP quarterly).
+
+on:
+  schedule:
+    - cron: '0 22 * * 0'
+  workflow_dispatch:
+
+jobs:
+  macro-panel:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Install CJK fonts (matplotlib chart labels)
+        run: |
+          sudo apt-get install -y fonts-wqy-microhei
+          python -c "import matplotlib; import shutil; shutil.rmtree(matplotlib.get_cachedir(), ignore_errors=True)"
+
+      - name: Run macro panel
+        env:
+          RUN_MODE:            macro_panel
+          # LLM narrative (falls back to template if unset)
+          ANTHROPIC_API_KEY:   ${{ secrets.ANTHROPIC_API_KEY }}
+          # Email delivery
+          SMTP_HOST:           ${{ secrets.SMTP_HOST }}
+          SMTP_PORT:           ${{ secrets.SMTP_PORT }}
+          SMTP_USER:           ${{ secrets.SMTP_USER }}
+          SMTP_PASS:           ${{ secrets.SMTP_PASS }}
+          REPORT_TO_EMAIL:     ${{ secrets.REPORT_TO_EMAIL }}
+          RECIPIENT_EMAIL:     ${{ secrets.RECIPIENT_EMAIL }}
+        run: python main.py

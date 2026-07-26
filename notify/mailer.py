@@ -92,8 +92,15 @@ class Mailer:
 # ── Portfolio risk helpers (standalone, no config object needed) ──────────────
 
 def _smtp_send(html: str, subject: str, plain: str = "",
-               chart_bytes: bytes = b"", cid: str = "rrChart") -> bool:
-    """Low-level SMTP send using env vars directly. Embeds chart as CID inline image when provided."""
+               chart_bytes: bytes = b"", cid: str = "rrChart",
+               images: list[tuple[str, bytes]] | None = None) -> bool:
+    """Low-level SMTP send using env vars directly.
+
+    Inline images can be embedded either via the legacy single-image slot
+    (`chart_bytes` + `cid`) or via `images=[(cid, png_bytes), ...]` for
+    multi-chart emails (e.g. macro panel). If both are given, the legacy
+    slot is treated as one more entry in `images`.
+    """
     from email.mime.image import MIMEImage
 
     host      = os.environ.get("SMTP_HOST", "smtp.gmail.com")
@@ -106,8 +113,12 @@ def _smtp_send(html: str, subject: str, plain: str = "",
         logger.error("No recipient configured (REPORT_TO_EMAIL / RECIPIENT_EMAIL)")
         return False
 
+    all_images: list[tuple[str, bytes]] = list(images) if images else []
     if chart_bytes:
-        # multipart/related wraps the HTML + inline PNG so Gmail renders the chart
+        all_images.append((cid, chart_bytes))
+
+    if all_images:
+        # multipart/related wraps the HTML + inline PNGs so Gmail renders them
         msg = MIMEMultipart("related")
         msg["Subject"] = subject
         msg["From"]    = user
@@ -117,10 +128,12 @@ def _smtp_send(html: str, subject: str, plain: str = "",
             alt.attach(MIMEText(plain, "plain"))
         alt.attach(MIMEText(html, "html"))
         msg.attach(alt)
-        img = MIMEImage(chart_bytes, _subtype="png")
-        img.add_header("Content-ID", f"<{cid}>")
-        img.add_header("Content-Disposition", "inline", filename=f"{cid}.png")
-        msg.attach(img)
+        for img_cid, img_bytes in all_images:
+            img = MIMEImage(img_bytes, _subtype="png")
+            img.add_header("Content-ID", f"<{img_cid}>")
+            img.add_header("Content-Disposition", "inline",
+                           filename=f"{img_cid}.png")
+            msg.attach(img)
     else:
         msg = MIMEMultipart("alternative")
         msg["Subject"] = subject

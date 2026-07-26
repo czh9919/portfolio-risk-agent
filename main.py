@@ -8,6 +8,7 @@ RUN_MODE=paper_trade  → paper trading via Alpaca
 RUN_MODE=market_brief → pre-market macro/news brief (Treasuries, DXY, VIX, curated news)
 RUN_MODE=heatmap      → post-close ETF heatmap (SPY/QQQ + 11 sector SPDRs, treemap + cards)
 RUN_MODE=compass      → post-close Bull-Bear Compass (6-factor regime score + 60d trend)
+RUN_MODE=macro_panel  → weekly Fed + macro dashboard (FRED indicators + FOMC futures)
 """
 import logging
 import os
@@ -444,10 +445,14 @@ if __name__ == "__main__":
         from notify.compass import run_compass_pipeline
         run_compass_pipeline(cfg)
 
+    elif mode == "macro_panel":
+        from notify.macro_panel import run_macro_panel_pipeline
+        run_macro_panel_pipeline(cfg)
+
     else:
         logger.error(
             f"Unknown RUN_MODE: {mode!r}. Use: "
             "portfolio | full | alert_check | backtest | paper_trade | "
-            "market_brief | heatmap | compass"
+            "market_brief | heatmap | compass | macro_panel"
         )
         sys.exit(1)

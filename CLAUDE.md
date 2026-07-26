@@ -17,7 +17,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 9. **Sends a pre-market Market Brief** (RUN_MODE=market_brief) with Treasury yields, DXY, VIX, SPY regime, and RSS-aggregated financial news (CNBC / WSJ / MarketWatch / Yahoo Finance / Investing.com / SeekingAlpha / FT) curated and summarised by Claude Sonnet 4.6
 10. **Sends a post-close Market Heatmap** (RUN_MODE=heatmap) with SPY + QQQ + 11 GICS sector SPDRs. Fetches top-10 constituents per ETF via yfinance, embeds a finviz-style treemap PNG (boxes sized by ETF weight, coloured by 1-day return) plus one HTML card per ETF with 1D/1W/1M return, 52-week-high distance, and volume ratio.
 11. **Sends a post-close Bull-Bear Compass** (RUN_MODE=compass) — 6-factor market regime score (trend, breadth, volatility, credit, yield curve, momentum), weighted composite scaled to [-100, +100] with Bull/Neutral/Bear label. Persists to `data/compass_history/history.json` (rolling 180 days) so a 60-day trend chart can accompany each email, plus a Claude Sonnet 4.6 bilingual narrative.
-12. **Serves a FastAPI + Vue dashboard** (`api/` + `web/`) with JWT auth, WebSocket log streaming, and manual run triggers
+12. **Sends a weekly Macro Panel** (RUN_MODE=macro_panel) — 14 FRED series (employment, inflation, GDP, Fed policy, financial conditions, yield-curve spreads) plus market-implied FOMC path from 30-day Fed Funds futures (yfinance ZQ contracts, since CME FedWatch's official API is CDN-blocked). Delivers 5 embedded PNG charts + Sonnet 4.6 bilingual macro analysis.
+13. **Serves a FastAPI + Vue dashboard** (`api/` + `web/`) with JWT auth, WebSocket log streaming, and manual run triggers
 
 All **real-money** trading decisions remain manual. Paper trading is fully automated but uses simulated funds only.
 
@@ -25,7 +26,7 @@ All **real-money** trading decisions remain manual. Paper trading is fully autom
 
 ### Pipeline and Run Modes (main.py)
 
-The system operates in **eight distinct modes**, selected via RUN_MODE environment variable:
+The system operates in **nine distinct modes**, selected via RUN_MODE environment variable:
 
 | Mode | Trigger | Pipeline |
 |---|---|---|
@@ -37,8 +38,9 @@ The system operates in **eight distinct modes**, selected via RUN_MODE environme
 | market_brief | 12:00 UTC Mon–Fri (~90 min before US open) | Treasuries + DXY + VIX + SPY regime → RSS aggregation across ~8 free feeds → Claude Sonnet 4.6 curates top 6-8 headlines + bilingual summary + 3 takeaways → email |
 | heatmap | 22:15 UTC Mon–Fri (post-close) | yfinance ETF holdings (13 ETFs × top-10) → batch price metrics → squarify treemap PNG + per-ETF HTML cards (1D/1W/1M %, 52wH distance, volume ratio) → single email |
 | compass | 22:30 UTC Mon–Fri (post-close) | 6-factor scores (trend/breadth/vol/credit/curve/momentum) → weighted composite [-100, +100] → persist history → 60-day trend PNG → Sonnet 4.6 bilingual narrative → email |
+| macro_panel | 22:00 UTC Sunday (weekly, pre-Monday-open) | 14 FRED series (NFP, UNRATE, PCE, CPI, GDP, Fed policy, NFCI, curve spreads) + ZQ futures for FOMC path → 5 embedded PNG trend charts + Sonnet 4.6 macro analysis → email |
 
-Entry point: `python main.py` reads RUN_MODE, config files, and delegates to `run_portfolio_pipeline()`, `run_backtest_pipeline()`, `strategy.paper_engine.run_paper_trade_pipeline()`, `notify.market_brief.run_market_brief_pipeline()`, `notify.heatmap.run_heatmap_pipeline()`, or `notify.compass.run_compass_pipeline()`.
+Entry point: `python main.py` reads RUN_MODE, config files, and delegates to `run_portfolio_pipeline()`, `run_backtest_pipeline()`, `strategy.paper_engine.run_paper_trade_pipeline()`, `notify.market_brief.run_market_brief_pipeline()`, `notify.heatmap.run_heatmap_pipeline()`, `notify.compass.run_compass_pipeline()`, or `notify.macro_panel.run_macro_panel_pipeline()`.
 
 ### Key Data Flow
 
@@ -127,10 +129,11 @@ Report + Email (notify.report_gen, notify.mailer)
 **`notify/`** – Reporting & delivery:
 - `report_gen.py`: Bilingual mobile-first HTML; inline CSS; all sections configurable
 - `chart.py`: Headless matplotlib efficient frontier PNG (Agg backend, CJK fallback)
-- `mailer.py`: SMTP + SendGrid fallback; CID-embedded images; backup on failure
+- `mailer.py`: SMTP + SendGrid fallback; CID-embedded images (single-image legacy `chart_bytes`/`cid` params, plus `images=[(cid, png_bytes), ...]` for multi-chart emails); backup on failure
 - `market_brief.py`: Pre-market brief — yfinance macro pull (Treasuries `^IRX`/`^TNX`/`^TYX`, DXY `DX-Y.NYB`, VIX, SPY/QQQ) → regime (VIX bucket, 10Y-3M curve slope, USD trend, SPY vs 20/50/200 SMA) → RSS aggregation via `feedparser` (CNBC / WSJ Markets / MarketWatch / Yahoo Finance / Investing.com / SeekingAlpha / FT, 24h lookback, per-feed try/except, dedup by title) → Claude Sonnet 4.6 curates `picked_indices` (6-8 macro-relevant items from the raw pool) plus bilingual summary + 3 takeaways → bilingual HTML email. Each stage fails gracefully so a missing key or feed outage never blocks delivery.
 - `heatmap.py`: Post-close market heatmap — 13 ETFs (`SPY`, `QQQ`, sector SPDRs `XLK`/`XLF`/`XLE`/`XLV`/`XLY`/`XLP`/`XLI`/`XLB`/`XLRE`/`XLU`/`XLC`) → yfinance `funds_data.top_holdings` (top-10 + weight per ETF, per-ETF try/except) → batch price metrics (curr, 1D/1W/1M return, 52w-high distance, volume ratio) → squarify treemap PNG (boxes sized by ETF weight, coloured by 1-day return; falls back to HTML-only if matplotlib/squarify unavailable) → bilingual HTML email with per-ETF cards + treemap embedded via CID.
 - `compass.py`: Bull-Bear Compass — 6-factor regime score. Fetches SPY (trend + momentum), full S&P 500 constituents (breadth: % above 200SMA), `^VIX`/`^VIX9D` (level + term structure), `HYG`/`IEF` (credit spread proxy), `^TNX`/`^IRX` (yield curve), and `GC=F`/`HG=F` (Gold/Copper safe-haven proxy). Each factor scored to `[-1,+1]`, combined via `config/settings.yaml → compass.weights` into a composite `[-100,+100]` labelled Bull/Mildly Bullish/Neutral/Mildly Bearish/Bear. History persisted to `data/compass_history/history.json` (rolling 180 days, committed by CI so the 60-day trend chart survives ephemeral runners). Sonnet 4.6 writes a bilingual narrative citing the dominant factor and shift vs prior session.
+- `macro_panel.py`: Weekly Fed + macro dashboard. Pulls 14 FRED series via `pandas-datareader` (no API key): `PAYEMS`/`UNRATE`/`ICSA` (employment), `PCEPILFE`/`PCEPI`/`CPILFESL`/`CPIAUCSL` (inflation, transformed to YoY), `GDPC1` (transformed to QoQ SAAR), `DFEDTARU`/`DFEDTARL`/`FEDFUNDS` (Fed policy), `NFCI` (Chicago Fed financial conditions), `T10Y2Y`/`T10Y3M` (curve spreads). Attempts CME FedWatch unofficial JSON API for rate probabilities (usually CDN-blocked with 403 → falls back to deriving implied rates from 30-day Fed Funds futures — `yfinance` ZQ contracts, one per upcoming FOMC meeting; binary 25 bps prob model). Renders 5 PNG charts (employment, inflation, Fed path, NFCI, yield curve) all embedded via CID; Sonnet 4.6 provides bilingual analytical read of Fed stance + inflation trajectory + labour + financial-conditions regime.
 
 **`alert.py`** – Alert system:
 - Fires bilingual alert emails for RED metrics
@@ -249,6 +252,11 @@ python test_pipeline.py   # import + smoke test
 - Runs `RUN_MODE=compass` — delivers `[Compass]` email with composite score, factor breakdown, 60-day trend PNG, and Sonnet 4.6 narrative
 - Commits `data/compass_history/` back to the repo with `[skip ci]` so history survives ephemeral runners (same rebase-retry pattern as paper_trade)
 - Requires `ANTHROPIC_API_KEY` for the narrative; falls back to a template summary if unset
+
+**`.github/workflows/macro_panel.yml`**
+- Cron: 22:00 UTC Sunday (weekly, evening before Monday open)
+- Runs `RUN_MODE=macro_panel` — delivers `[Macro Panel]` email with 5 embedded PNG trend charts + FRED snapshot table + market-implied FOMC path + Sonnet 4.6 bilingual macro analysis
+- Requires SMTP secrets; `ANTHROPIC_API_KEY` optional (falls back to a numeric-only summary template). FRED and yfinance are keyless.
 
 **`.github/workflows/ci.yml`**
 - Runs on push/PR to main or master

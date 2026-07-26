@@ -6,6 +6,7 @@ RUN_MODE=alert_check  → portfolio threshold check only (no report)
 RUN_MODE=backtest     → walk-forward backtest
 RUN_MODE=paper_trade  → paper trading via Alpaca
 RUN_MODE=market_brief → pre-market macro/news brief (Treasuries, DXY, VIX, curated news)
+RUN_MODE=heatmap      → post-close ETF heatmap (SPY/QQQ + 11 sector SPDRs, treemap + cards)
 """
 import logging
 import os
@@ -434,9 +435,14 @@ if __name__ == "__main__":
         from notify.market_brief import run_market_brief_pipeline
         run_market_brief_pipeline(cfg)
 
+    elif mode == "heatmap":
+        from notify.heatmap import run_heatmap_pipeline
+        run_heatmap_pipeline(cfg)
+
     else:
         logger.error(
             f"Unknown RUN_MODE: {mode!r}. Use: "
-            "portfolio | full | alert_check | backtest | paper_trade | market_brief"
+            "portfolio | full | alert_check | backtest | paper_trade | "
+            "market_brief | heatmap"
         )
         sys.exit(1)

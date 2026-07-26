@@ -7,6 +7,7 @@ RUN_MODE=backtest     → walk-forward backtest
 RUN_MODE=paper_trade  → paper trading via Alpaca
 RUN_MODE=market_brief → pre-market macro/news brief (Treasuries, DXY, VIX, curated news)
 RUN_MODE=heatmap      → post-close ETF heatmap (SPY/QQQ + 11 sector SPDRs, treemap + cards)
+RUN_MODE=compass      → post-close Bull-Bear Compass (6-factor regime score + 60d trend)
 """
 import logging
 import os
@@ -439,10 +440,14 @@ if __name__ == "__main__":
         from notify.heatmap import run_heatmap_pipeline
         run_heatmap_pipeline(cfg)
 
+    elif mode == "compass":
+        from notify.compass import run_compass_pipeline
+        run_compass_pipeline(cfg)
+
     else:
         logger.error(
             f"Unknown RUN_MODE: {mode!r}. Use: "
             "portfolio | full | alert_check | backtest | paper_trade | "
-            "market_brief | heatmap"
+            "market_brief | heatmap | compass"
         )
         sys.exit(1)

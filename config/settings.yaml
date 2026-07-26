@@ -86,3 +86,16 @@ paper_trade:
   # ── Short overlay: open shorts on robust SELL signals ──────────────────────
   short_pos_pct: 0.04       # equity fraction per short position (whole shares only)
   short_max_total_pct: 0.12 # cap on gross short exposure; 0 disables shorting
+
+# Bull-Bear Compass — 6-factor market regime score, delivered via
+# RUN_MODE=compass (22:30 UTC weekdays). Each factor is normalised to
+# [-1, +1] then combined via these weights (sum should equal 1.0).
+compass:
+  weights:
+    trend:     0.20   # SPY vs 200SMA, 50-vs-200 golden/death cross
+    breadth:   0.20   # % of S&P 500 members above their 200-day SMA
+    vol:       0.20   # VIX level + VIX9D/VIX term structure
+    credit:    0.15   # HYG (junk) vs IEF (Treasuries) 20-day divergence
+    curve:     0.10   # 10Y - 3M Treasury slope (inversion = late-cycle bear)
+    momentum:  0.15   # SPY 3M/6M returns + Gold/Copper (safe-haven proxy)
+  history_days: 180   # rolling window kept in data/compass_history/history.json

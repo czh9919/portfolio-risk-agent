@@ -1,0 +1,96 @@
+name: Bull-Bear Compass
+
+# Fires at 22:30 UTC Mon-Fri — 15 min after the heatmap workflow, so
+# yfinance rate limits and connection pools don't clash. Full-day US
+# price data is settled at this point.
+#
+# Commits data/compass_history/ back to the repo with [skip ci] so the
+# 60-day trend chart survives across ephemeral runners.
+
+on:
+  schedule:
+    - cron: '30 22 * * 1-5'
+  workflow_dispatch:
+
+jobs:
+  compass:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Install CJK fonts (matplotlib chart labels)
+        run: |
+          sudo apt-get install -y fonts-wqy-microhei
+          python -c "import matplotlib; import shutil; shutil.rmtree(matplotlib.get_cachedir(), ignore_errors=True)"
+
+      # Restore cache/ so the S&P 500 constituent list (Wikipedia scrape,
+      # 1-week TTL) survives across runs.
+      - name: Restore persistent cache
+        uses: actions/cache@v4
+        with:
+          path: cache/
+          key: persist-${{ runner.os }}-${{ github.run_id }}
+          restore-keys: |
+            persist-${{ runner.os }}-
+
+      - name: Run compass
+        env:
+          RUN_MODE:            compass
+          # LLM narrative (falls back to template if unset)
+          ANTHROPIC_API_KEY:   ${{ secrets.ANTHROPIC_API_KEY }}
+          # Email delivery
+          SMTP_HOST:           ${{ secrets.SMTP_HOST }}
+          SMTP_PORT:           ${{ secrets.SMTP_PORT }}
+          SMTP_USER:           ${{ secrets.SMTP_USER }}
+          SMTP_PASS:           ${{ secrets.SMTP_PASS }}
+          REPORT_TO_EMAIL:     ${{ secrets.REPORT_TO_EMAIL }}
+          RECIPIENT_EMAIL:     ${{ secrets.RECIPIENT_EMAIL }}
+        run: python main.py
+
+      # Commit history — same rebase-retry pattern as paper_trade.yml so
+      # concurrent workflows don't drop today's compass reading.
+      - name: Commit compass history
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add data/compass_history 2>/dev/null || true
+          if git diff --staged --quiet; then
+            echo "No compass history changes to commit"
+            exit 0
+          fi
+          git commit -m "chore: compass history update [skip ci]"
+          for attempt in 1 2 3 4 5; do
+            if git pull --rebase -X theirs origin master && git push; then
+              echo "Compass history pushed (attempt $attempt)"
+              exit 0
+            fi
+            echo "Push attempt $attempt failed — retrying"
+            git rebase --abort 2>/dev/null || true
+            sleep $((attempt * 5))
+          done
+          echo "ERROR: could not push compass history after 5 attempts" >&2
+          exit 1
+
+      - name: Save persistent cache
+        uses: actions/cache@v4
+        with:
+          path: cache/
+          key: persist-${{ runner.os }}-${{ github.run_id }}

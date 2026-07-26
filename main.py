@@ -1,9 +1,11 @@
 """
 Unified entry point.
-RUN_MODE=portfolio   → portfolio risk pipeline only (no watchlist factor ranking)
-RUN_MODE=full        → portfolio pipeline + watchlist FF5 factor ranking (default)
-RUN_MODE=alert_check → portfolio threshold check only (no report)
-RUN_MODE=backtest    → walk-forward backtest
+RUN_MODE=portfolio    → portfolio risk pipeline only (no watchlist factor ranking)
+RUN_MODE=full         → portfolio pipeline + watchlist FF5 factor ranking (default)
+RUN_MODE=alert_check  → portfolio threshold check only (no report)
+RUN_MODE=backtest     → walk-forward backtest
+RUN_MODE=paper_trade  → paper trading via Alpaca
+RUN_MODE=market_brief → pre-market macro/news brief (Treasuries, DXY, VIX, curated news)
 """
 import logging
 import os
@@ -428,6 +430,13 @@ if __name__ == "__main__":
         from strategy.paper_engine import run_paper_trade_pipeline
         run_paper_trade_pipeline(cfg)
 
+    elif mode == "market_brief":
+        from notify.market_brief import run_market_brief_pipeline
+        run_market_brief_pipeline(cfg)
+
     else:
-        logger.error(f"Unknown RUN_MODE: {mode!r}. Use: portfolio | full | alert_check | backtest | paper_trade")
+        logger.error(
+            f"Unknown RUN_MODE: {mode!r}. Use: "
+            "portfolio | full | alert_check | backtest | paper_trade | market_brief"
+        )
         sys.exit(1)

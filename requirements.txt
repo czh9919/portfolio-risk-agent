@@ -18,3 +18,5 @@ PyYAML>=6.0
 pandas-datareader>=0.10
 lxml>=4.9
 pytest>=8.0
+anthropic>=0.40
+feedparser>=6.0

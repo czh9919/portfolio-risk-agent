@@ -14,7 +14,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 6. **Generates Markowitz efficient frontier** with FF5-implied expected returns
 7. **Delivers bilingual (EN/ZH) HTML email reports** with embedded risk-return charts
 8. **Runs an automated paper-trading loop** (RUN_MODE=paper_trade) against an Alpaca paper account: FF5 screening of watchlist + random S&P 500 sample, robust-signal-gated orders, risk gates, stop-losses, and self-maintaining watchlist promotion/pruning
-9. **Serves a FastAPI + Vue dashboard** (`api/` + `web/`) with JWT auth, WebSocket log streaming, and manual run triggers
+9. **Sends a pre-market Market Brief** (RUN_MODE=market_brief) with Treasury yields, DXY, VIX, SPY regime, and RSS-aggregated financial news (CNBC / WSJ / MarketWatch / Yahoo Finance / Investing.com / SeekingAlpha / FT) curated and summarised by Claude Sonnet 4.6
+10. **Serves a FastAPI + Vue dashboard** (`api/` + `web/`) with JWT auth, WebSocket log streaming, and manual run triggers
 
 All **real-money** trading decisions remain manual. Paper trading is fully automated but uses simulated funds only.
 
@@ -22,7 +23,7 @@ All **real-money** trading decisions remain manual. Paper trading is fully autom
 
 ### Pipeline and Run Modes (main.py)
 
-The system operates in **five distinct modes**, selected via RUN_MODE environment variable:
+The system operates in **six distinct modes**, selected via RUN_MODE environment variable:
 
 | Mode | Trigger | Pipeline |
 |---|---|---|
@@ -31,8 +32,9 @@ The system operates in **five distinct modes**, selected via RUN_MODE environmen
 | alert_check | Manual only (folded into `full`, which calls the same threshold check post-close) | Holdings → prices → threshold check only (fire RED alerts) |
 | backtest | Manual | S&P 500 universe → walk-forward validation (FF5 μ vs historical μ) |
 | paper_trade | 22:00 UTC Mon–Fri | Universe expansion → FF5 screen → watchlist promote/prune → risk gates → Alpaca paper orders → state commit + email summary |
+| market_brief | 12:00 UTC Mon–Fri (~90 min before US open) | Treasuries + DXY + VIX + SPY regime → RSS aggregation across ~8 free feeds → Claude Sonnet 4.6 curates top 6-8 headlines + bilingual summary + 3 takeaways → email |
 
-Entry point: `python main.py` reads RUN_MODE, config files, and delegates to `run_portfolio_pipeline()`, `run_backtest_pipeline()`, or `strategy.paper_engine.run_paper_trade_pipeline()`.
+Entry point: `python main.py` reads RUN_MODE, config files, and delegates to `run_portfolio_pipeline()`, `run_backtest_pipeline()`, `strategy.paper_engine.run_paper_trade_pipeline()`, or `notify.market_brief.run_market_brief_pipeline()`.
 
 ### Key Data Flow
 
@@ -122,6 +124,7 @@ Report + Email (notify.report_gen, notify.mailer)
 - `report_gen.py`: Bilingual mobile-first HTML; inline CSS; all sections configurable
 - `chart.py`: Headless matplotlib efficient frontier PNG (Agg backend, CJK fallback)
 - `mailer.py`: SMTP + SendGrid fallback; CID-embedded images; backup on failure
+- `market_brief.py`: Pre-market brief — yfinance macro pull (Treasuries `^IRX`/`^TNX`/`^TYX`, DXY `DX-Y.NYB`, VIX, SPY/QQQ) → regime (VIX bucket, 10Y-3M curve slope, USD trend, SPY vs 20/50/200 SMA) → RSS aggregation via `feedparser` (CNBC / WSJ Markets / MarketWatch / Yahoo Finance / Investing.com / SeekingAlpha / FT, 24h lookback, per-feed try/except, dedup by title) → Claude Sonnet 4.6 curates `picked_indices` (6-8 macro-relevant items from the raw pool) plus bilingual summary + 3 takeaways → bilingual HTML email. Each stage fails gracefully so a missing key or feed outage never blocks delivery.
 
 **`alert.py`** – Alert system:
 - Fires bilingual alert emails for RED metrics
@@ -224,6 +227,11 @@ python test_pipeline.py   # import + smoke test
 - Cron: 22:00 UTC Mon–Fri (30 min after daily_run full mode)
 - Manual dispatch with optional dry-run flag
 - Commits paper-trade state back to the repo (watchlist promotions/prunes + `data/paper_state/`) with `[skip ci]`
+
+**`.github/workflows/market_brief.yml`**
+- Cron: 12:00 UTC Mon–Fri (~90 min before US pre-market open)
+- Runs `RUN_MODE=market_brief` — no state to commit, delivers `[Market Brief]` email only
+- Only `ANTHROPIC_API_KEY` (Claude Sonnet 4.6) is required for curated summaries. Without it, the brief still ships with the first 8 raw RSS headlines and a template summary. RSS feeds are keyless.
 
 **`.github/workflows/ci.yml`**
 - Runs on push/PR to main or master

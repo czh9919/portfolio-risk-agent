@@ -1,0 +1,45 @@
+name: Market Brief
+
+# Fires at 12:00 UTC Mon-Fri — ~90 min before US pre-market open
+# (07:00 EDT / 08:00 EST). Delivers a bilingual pre-market brief:
+# Treasuries + DXY + VIX + SPY regime + curated news with a Claude Haiku
+# bilingual summary and 3 key takeaways.
+
+on:
+  schedule:
+    - cron: '0 12 * * 1-5'
+  workflow_dispatch:
+
+jobs:
+  market-brief:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Run market brief
+        env:
+          RUN_MODE:            market_brief
+          # LLM curation (news source is free RSS, no key needed)
+          ANTHROPIC_API_KEY:   ${{ secrets.ANTHROPIC_API_KEY }}
+          # Email delivery (SMTP)
+          SMTP_HOST:           ${{ secrets.SMTP_HOST }}
+          SMTP_PORT:           ${{ secrets.SMTP_PORT }}
+          SMTP_USER:           ${{ secrets.SMTP_USER }}
+          SMTP_PASS:           ${{ secrets.SMTP_PASS }}
+          REPORT_TO_EMAIL:     ${{ secrets.REPORT_TO_EMAIL }}
+          RECIPIENT_EMAIL:     ${{ secrets.RECIPIENT_EMAIL }}
+        run: python main.py

@@ -138,5 +138,25 @@
     "value_usd": 5783.944372771728,
     "reason": "CORE SWEEP  $5,784 \u2192 SPY  (60% of $9,640, buffer 2%)",
     "equity": 99216.14
+  },
+  {
+    "timestamp": "2026-07-31T15:48:52Z",
+    "ticker": "IR",
+    "side": "short",
+    "qty": 47,
+    "price_est": 82.44999694824219,
+    "value_usd": 3875.149856567383,
+    "reason": "SHORT signal  t=-2.0  IR=-2.24  size=4.0%",
+    "equity": 97867.14
+  },
+  {
+    "timestamp": "2026-07-31T15:48:52Z",
+    "ticker": "OTIS",
+    "side": "short",
+    "qty": 54,
+    "price_est": 72.0199966430664,
+    "value_usd": 3889.079818725586,
+    "reason": "SHORT signal  t=-1.2  IR=-1.38  size=4.0%",
+    "equity": 97867.14
   }
 ]

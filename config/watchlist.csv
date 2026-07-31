@@ -20,4 +20,3 @@ LITE,1.0,FF5 signal=BUY t=3.2 IR=3.63 [2026-05-28],equity,USD
 JNJ,1.0,FF5 signal=BUY t=3.1 IR=3.46 [2026-05-29],equity,USD
 STX,1.0,FF5 signal=BUY t=2.5 IR=2.76 [2026-07-07],equity,USD
 OTIS,1.0,FF5 signal=SELL t=-1.2 IR=-1.38 [2026-07-31],equity,USD
-IR,1.0,FF5 signal=SELL t=-2.0 IR=-2.24 [2026-07-31],equity,USD

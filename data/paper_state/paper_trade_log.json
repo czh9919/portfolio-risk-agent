@@ -158,5 +158,15 @@
     "value_usd": 3889.079818725586,
     "reason": "SHORT signal  t=-1.2  IR=-1.38  size=4.0%",
     "equity": 97867.14
+  },
+  {
+    "timestamp": "2026-08-04T16:01:29Z",
+    "ticker": "OTIS",
+    "side": "cover",
+    "qty": 54.0,
+    "price_est": null,
+    "value_usd": 3950.91,
+    "reason": "COVER  robust signal now HOLD",
+    "equity": 99897.83
   }
 ]

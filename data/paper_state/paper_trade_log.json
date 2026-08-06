@@ -168,5 +168,15 @@
     "value_usd": 3950.91,
     "reason": "COVER  robust signal now HOLD",
     "equity": 99897.83
+  },
+  {
+    "timestamp": "2026-08-06T16:05:45Z",
+    "ticker": "IR",
+    "side": "cover",
+    "qty": 47.0,
+    "price_est": null,
+    "value_usd": 4204.62,
+    "reason": "COVER  robust signal now HOLD",
+    "equity": 99964.77
   }
 ]

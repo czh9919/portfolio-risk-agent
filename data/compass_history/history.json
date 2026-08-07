@@ -109,14 +109,14 @@
   },
   {
     "date": "2026-08-07",
-    "composite": 53.727738219090796,
+    "composite": 62.66835163664175,
     "label_en": "Bull",
     "label_zh": "强牛",
-    "score_trend": 0.9586775284008522,
-    "score_breadth": 0.7919999999999998,
-    "score_vol": 0.2,
-    "score_credit": 0.08947549493207196,
-    "score_curve": 0.46900010108947754,
-    "score_momentum": 0.5788036144131934
+    "score_trend": 0.9999249075883201,
+    "score_breadth": 0.9039999999999999,
+    "score_vol": 0.6,
+    "score_credit": 0.07316834016584117,
+    "score_curve": 0.4750000238418579,
+    "score_momentum": 0.44948854293127605
   }
 ]

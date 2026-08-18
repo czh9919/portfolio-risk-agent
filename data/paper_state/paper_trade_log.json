@@ -178,5 +178,35 @@
     "value_usd": 4204.62,
     "reason": "COVER  robust signal now HOLD",
     "equity": 99964.77
+  },
+  {
+    "timestamp": "2026-08-18T14:17:05Z",
+    "ticker": "QQQ",
+    "side": "sell",
+    "qty": 6.731542,
+    "price_est": 718.5499877929688,
+    "value_usd": 4836.949421927857,
+    "reason": "CORE FUNDING  sell parked QQQ $4,837 to fund signal BUYs",
+    "equity": 102220.47
+  },
+  {
+    "timestamp": "2026-08-18T14:17:05Z",
+    "ticker": "SPY",
+    "side": "sell",
+    "qty": 14.252763,
+    "price_est": 768.625,
+    "value_usd": 10955.029960875,
+    "reason": "CORE FUNDING  sell parked SPY $10,955 to fund signal BUYs",
+    "equity": 102220.47
+  },
+  {
+    "timestamp": "2026-08-18T14:17:05Z",
+    "ticker": "WDC",
+    "side": "buy",
+    "qty": 30.589972,
+    "price_est": 501.2449951171875,
+    "value_usd": 15333.070365774902,
+    "reason": "BUY signal  t=2.9  IR=3.26  alloc=15.0%",
+    "equity": 102220.47
   }
 ]

@@ -226,5 +226,17 @@
     "score_credit": 0.0509898055136393,
     "score_curve": 0.4965001344680786,
     "score_momentum": 0.14347152264603275
+  },
+  {
+    "date": "2026-08-21",
+    "composite": 46.354003184226904,
+    "label_en": "Mildly Bullish",
+    "label_zh": "偏牛",
+    "score_trend": 0.8755525591230378,
+    "score_breadth": 0.7704590818363273,
+    "score_vol": 0.2,
+    "score_credit": 0.1410690946385862,
+    "score_curve": 0.5140000581741333,
+    "score_momentum": 0.14518222424796495
   }
 ]

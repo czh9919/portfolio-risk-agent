@@ -248,5 +248,25 @@
     "value_usd": 16126.78349452661,
     "reason": "CORE SWEEP  $16,127 \u2192 SPY  (60% of $26,878, buffer 2%)",
     "equity": 96572.89
+  },
+  {
+    "timestamp": "2026-08-24T22:16:42Z",
+    "ticker": "QQQ",
+    "side": "buy",
+    "qty": 0.339717,
+    "price_est": 706.3200073242188,
+    "value_usd": 239.9489139281616,
+    "reason": "CORE SWEEP  $240 \u2192 QQQ  (40% of $600, buffer 2%)",
+    "equity": 96949.88
+  },
+  {
+    "timestamp": "2026-08-24T22:16:42Z",
+    "ticker": "SPY",
+    "side": "buy",
+    "qty": 0.471431,
+    "price_est": 763.469970703125,
+    "value_usd": 359.9234117585449,
+    "reason": "CORE SWEEP  $360 \u2192 SPY  (60% of $600, buffer 2%)",
+    "equity": 96949.88
   }
 ]

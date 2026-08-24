@@ -208,5 +208,45 @@
     "value_usd": 15333.070365774902,
     "reason": "BUY signal  t=2.9  IR=3.26  alloc=15.0%",
     "equity": 102220.47
+  },
+  {
+    "timestamp": "2026-08-24T14:26:23Z",
+    "ticker": "WDC",
+    "side": "sell",
+    "qty": 30,
+    "price_est": 424.0150146484375,
+    "value_usd": 12720.450439453125,
+    "reason": "STOP-LOSS  unrealised P&L -15.6% < -15%",
+    "equity": 96572.89
+  },
+  {
+    "timestamp": "2026-08-24T14:26:23Z",
+    "ticker": "STX",
+    "side": "sell",
+    "qty": 18,
+    "price_est": 782.7249755859375,
+    "value_usd": 14089.049560546875,
+    "reason": "TRAILING STOP  21.3% below high $994.79",
+    "equity": 96572.89
+  },
+  {
+    "timestamp": "2026-08-24T14:26:23Z",
+    "ticker": "QQQ",
+    "side": "buy",
+    "qty": 15.281343,
+    "price_est": 703.5499877929688,
+    "value_usd": 10751.188681110169,
+    "reason": "CORE SWEEP  $10,751 \u2192 QQQ  (40% of $26,878, buffer 2%)",
+    "equity": 96572.89
+  },
+  {
+    "timestamp": "2026-08-24T14:26:23Z",
+    "ticker": "SPY",
+    "side": "buy",
+    "qty": 21.144892,
+    "price_est": 762.6798706054688,
+    "value_usd": 16126.78349452661,
+    "reason": "CORE SWEEP  $16,127 \u2192 SPY  (60% of $26,878, buffer 2%)",
+    "equity": 96572.89
   }
 ]

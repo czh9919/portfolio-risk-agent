@@ -268,5 +268,45 @@
     "value_usd": 359.9234117585449,
     "reason": "CORE SWEEP  $360 \u2192 SPY  (60% of $600, buffer 2%)",
     "equity": 96949.88
+  },
+  {
+    "timestamp": "2026-08-25T14:28:21Z",
+    "ticker": "QQQ",
+    "side": "sell",
+    "qty": 13.914574,
+    "price_est": 709.6701049804688,
+    "value_usd": 9874.757191338502,
+    "reason": "CORE FUNDING  sell parked QQQ $9,875 to fund signal BUYs",
+    "equity": 97073.27
+  },
+  {
+    "timestamp": "2026-08-25T14:28:21Z",
+    "ticker": "SPY",
+    "side": "sell",
+    "qty": 25.167291,
+    "price_est": 765.010009765625,
+    "value_usd": 19253.229533684324,
+    "reason": "CORE FUNDING  sell parked SPY $19,253 to fund signal BUYs",
+    "equity": 97073.27
+  },
+  {
+    "timestamp": "2026-08-25T14:28:21Z",
+    "ticker": "WDC",
+    "side": "buy",
+    "qty": 33.437414,
+    "price_est": 435.4700012207031,
+    "value_usd": 14560.990715397154,
+    "reason": "BUY signal  t=2.8  IR=3.16  alloc=15.0%",
+    "equity": 97073.27
+  },
+  {
+    "timestamp": "2026-08-25T14:28:21Z",
+    "ticker": "STX",
+    "side": "buy",
+    "qty": 18.006209,
+    "price_est": 808.6649780273438,
+    "value_usd": 14560.990605340758,
+    "reason": "BUY signal  t=2.5  IR=2.81  alloc=15.0%",
+    "equity": 97073.27
   }
 ]

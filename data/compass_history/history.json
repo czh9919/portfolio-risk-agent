@@ -274,5 +274,17 @@
     "score_credit": 0.1343839289399007,
     "score_curve": 0.4869999885559082,
     "score_momentum": 0.09368618893979902
+  },
+  {
+    "date": "2026-08-28",
+    "composite": 54.0316184732867,
+    "label_en": "Bull",
+    "label_zh": "强牛",
+    "score_trend": 0.9087522513642345,
+    "score_breadth": 0.7784431137724552,
+    "score_vol": 0.6,
+    "score_credit": 0.09637499897604318,
+    "score_curve": 0.49699997901916504,
+    "score_momentum": 0.12480575971470714
   }
 ]

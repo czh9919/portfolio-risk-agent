@@ -308,5 +308,35 @@
     "value_usd": 14560.990605340758,
     "reason": "BUY signal  t=2.5  IR=2.81  alloc=15.0%",
     "equity": 97073.27
+  },
+  {
+    "timestamp": "2026-08-31T19:43:03Z",
+    "ticker": "QQQ",
+    "side": "sell",
+    "qty": 6.97317,
+    "price_est": 715.9249877929688,
+    "value_usd": 4992.2666471282955,
+    "reason": "CORE FUNDING  sell parked QQQ $4,992 to fund signal BUYs",
+    "equity": 97577.07
+  },
+  {
+    "timestamp": "2026-08-31T19:43:03Z",
+    "ticker": "SPY",
+    "side": "sell",
+    "qty": 12.612856,
+    "price_est": 766.9099731445312,
+    "value_usd": 9672.925056235841,
+    "reason": "CORE FUNDING  sell parked SPY $9,673 to fund signal BUYs",
+    "equity": 97577.07
+  },
+  {
+    "timestamp": "2026-08-31T19:43:03Z",
+    "ticker": "SNDK",
+    "side": "buy",
+    "qty": 9.876222,
+    "price_est": 1482.0,
+    "value_usd": 14636.561004000001,
+    "reason": "BUY signal  t=3.7  IR=4.24  alloc=15.0%",
+    "equity": 97577.07
   }
 ]

@@ -15,7 +15,6 @@ IEF,1.0,iShares 7-10 Year Treasury Bond ETF,bond,USD
 AGG,1.0,iShares Core U.S. Aggregate Bond ETF,bond,USD
 GLD,1.0,SPDR Gold Shares,gold,USD
 INTC,1.0,Intel,equity,USD
-GOOG,1.0,FF5 signal=BUY t=2.3 IR=2.62 [2026-05-27],equity,USD
 LITE,1.0,FF5 signal=BUY t=3.2 IR=3.63 [2026-05-28],equity,USD
 JNJ,1.0,FF5 signal=BUY t=3.1 IR=3.46 [2026-05-29],equity,USD
 STX,1.0,FF5 signal=BUY t=2.5 IR=2.76 [2026-07-07],equity,USD

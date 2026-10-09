@@ -338,5 +338,15 @@
     "value_usd": 14636.561004000001,
     "reason": "BUY signal  t=3.7  IR=4.24  alloc=15.0%",
     "equity": 97577.07
+  },
+  {
+    "timestamp": "2026-10-09T01:35:07Z",
+    "ticker": "WDC",
+    "side": "sell",
+    "qty": 33,
+    "price_est": 393.30999755859375,
+    "value_usd": 12979.229919433594,
+    "reason": "TRAILING STOP  20.0% below high $491.81",
+    "equity": 96456.97
   }
 ]

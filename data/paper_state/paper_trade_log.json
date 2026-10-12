@@ -348,5 +348,25 @@
     "value_usd": 12979.229919433594,
     "reason": "TRAILING STOP  20.0% below high $491.81",
     "equity": 96456.97
+  },
+  {
+    "timestamp": "2026-10-12T21:52:57Z",
+    "ticker": "SNDK",
+    "side": "sell",
+    "qty": 9,
+    "price_est": 1487.3299560546875,
+    "value_usd": 13385.969604492188,
+    "reason": "TRAILING STOP  21.4% below high $1893.18",
+    "equity": 95078.28
+  },
+  {
+    "timestamp": "2026-10-12T21:52:57Z",
+    "ticker": "STX",
+    "side": "sell",
+    "qty": 18,
+    "price_est": 753.25,
+    "value_usd": 13558.5,
+    "reason": "TRAILING STOP  20.3% below high $945.57",
+    "equity": 95078.28
   }
 ]

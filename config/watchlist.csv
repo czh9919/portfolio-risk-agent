@@ -18,5 +18,4 @@ INTC,1.0,Intel,equity,USD
 LITE,1.0,FF5 signal=BUY t=3.2 IR=3.63 [2026-05-28],equity,USD
 JNJ,1.0,FF5 signal=BUY t=3.1 IR=3.46 [2026-05-29],equity,USD
 STX,1.0,FF5 signal=BUY t=2.5 IR=2.76 [2026-07-07],equity,USD
-WDC,1.0,FF5 signal=BUY t=2.9 IR=3.26 [2026-08-18],equity,USD
 SNDK,1.0,FF5 signal=BUY t=3.7 IR=4.24 [2026-08-31],equity,USD

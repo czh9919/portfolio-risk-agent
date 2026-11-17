@@ -958,5 +958,17 @@
     "score_credit": 0.10486914132313174,
     "score_curve": 0.5160000324249268,
     "score_momentum": -0.059575755280117715
+  },
+  {
+    "date": "2026-11-17",
+    "composite": 3.4554368784897047,
+    "label_en": "Neutral",
+    "label_zh": "中性",
+    "score_trend": 0.37450301859605095,
+    "score_breadth": 0.3839999999999999,
+    "score_vol": -0.631427294550411,
+    "score_credit": -0.06155419741076695,
+    "score_curve": 0.497999906539917,
+    "score_momentum": -0.20951758044405056
   }
 ]

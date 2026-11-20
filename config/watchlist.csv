@@ -17,3 +17,4 @@ GLD,1.0,SPDR Gold Shares,gold,USD
 INTC,1.0,Intel,equity,USD
 JNJ,1.0,FF5 signal=BUY t=3.1 IR=3.46 [2026-05-29],equity,USD
 STX,1.0,FF5 signal=BUY t=2.5 IR=2.76 [2026-07-07],equity,USD
+VLO,1.0,FF5 signal=BUY t=2.3 IR=2.59 [2026-11-20],equity,USD
